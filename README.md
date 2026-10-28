@@ -1,40 +1,30 @@
 # Orbit Dial
 
-A standalone Android phone dialer with a circular dial pad and **Gesture Speed Dial**.
+A standalone Android phone app with a circular dial pad, your real call history and contacts, and a few things other dialers don't do.
 
-## The dial pad
-The twelve keys sit around a ring like the hours on a clock (1 at one o'clock … # at twelve), with a green CALL button in the centre. A small "satellite" glides around the outer orbit to follow your finger, and every key gives a DTMF tone and a haptic tick.
+## What it does
+- **Keypad:** twelve keys around a ring like a clock, with a breathing green CALL button in the middle. Keys ripple and click as you tap, and a glowing satellite follows your finger. Long-press 0 for `+`, long-press ⌫ to clear.
+- **Recents:** your phone's real call history with incoming, outgoing and missed icons, durations, contact photos and grouped repeat calls. Filter to missed calls only. Tap a call for actions (message, copy, add to contacts, edit before calling, assign gesture).
+- **Contacts:** every contact with a phone number, alphabetical sections, photos, favourites strip and search by name or number. Tap for a contact card with call and message buttons; long-press to call straight away.
 
-- Tap a key: type the digit
-- Long-press 0: type `+`
-- Tap ⌫ to delete, long-press it to clear
-- Tap CALL with nothing typed: brings back your last number
+## The edge
+- **Gesture Speed Dial:** drag across three or more keys without lifting your finger (say 1 → 5 → 9) and link it to a contact. Drawing that path calls them instantly. Assign gestures from the dial, any contact card, or any recent call.
+- **Smart dial search:** start typing on the dial and matching contacts appear, by number or by name spelled on the keys (typing 6-8-6 finds "Mum").
+- **Call insights:** calls today, talk time, missed calls and who you've talked to most this week, at the top of Recents.
+- **Lively design:** slowly drifting colour glows that turn green when a number is ready to call, animated tab switches and a slide-up contact card.
 
-## New feature: Gesture Speed Dial
-Drag your finger across three or more keys without lifting it (for example 1 → 5 → 9). A glowing trail follows your path and numbers each step. When you let go:
-
-- If that path is new, Orbit Dial asks who it should call and saves it.
-- If it is already saved, it calls that person immediately.
-
-So instead of scrolling contacts, you "draw" a person: a triangle for Mum, a straight line for work. Manage your paths under **Gestures**. Calls you place appear under **Recents**. Everything is stored only on the phone.
+Everything stays on the phone. Orbit Dial reads contacts and call history only to show them to you.
 
 ## Build the APK
+Every push to this repository builds a new APK automatically: open the **Actions** tab, open the latest "Build APK" run and download **OrbitDial-apk**.
 
-**Option A: GitHub (no software to install)**
-1. Create a new GitHub repository and upload this whole folder.
-2. Open the **Actions** tab; the "Build APK" workflow runs automatically (or press *Run workflow*).
-3. When it turns green (about 3–5 minutes), open the run and download **OrbitDial-apk**. Inside is `OrbitDial.apk`.
-
-**Option B: Android Studio**
-1. File → Open → choose this folder. Let Gradle sync.
-2. Build → Build App Bundle(s) / APK(s) → Build APK(s).
-3. The APK is in `app/build/outputs/apk/`.
+You can also open the folder in Android Studio and choose Build → Build APK(s).
 
 ## Install on your phone
-Copy `OrbitDial.apk` to the phone, open it, and allow "Install unknown apps" for your file manager when asked. The first time you call, allow the Phone permission (if you refuse, Orbit Dial passes the number to your normal dialer instead).
+Open `OrbitDial.apk`, allow "Install unknown apps" if asked, and install. On first launch, allow Contacts, Call logs and Phone so every tab works.
 
 ## Technical notes
 - Pure Java, Android framework only: no third-party libraries.
 - minSdk 26 (Android 8.0), targetSdk 34.
-- The release build is signed with the debug key so it installs directly. Use your own keystore before publishing to the Play Store.
-- Orbit Dial places outgoing calls. The in-call screen is still your phone's own (replacing that requires becoming the system's default phone app, which is a much larger project).
+- The release build is signed with the debug key so it installs directly. Use your own keystore before publishing anywhere.
+- Orbit Dial places outgoing calls; the in-call screen is still your phone's own.

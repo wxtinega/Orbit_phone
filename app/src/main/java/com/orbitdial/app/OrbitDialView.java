@@ -69,6 +69,15 @@ public class OrbitDialView extends View {
     private float orbitAngle = -90f;
     private ValueAnimator orbitAnim;
 
+    // Liveliness: expanding rings where you touch, and a breathing call button when a number is ready.
+    private static final long RIPPLE_MS = 450;
+    private final List<long[]> ripples = new ArrayList<>(); // {keyIndex, startTime}
+    private final Paint ripplePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private boolean ready;
+    private ValueAnimator pulse;
+    private float pulseT;
+
     private final Runnable longPressRunnable = new Runnable() {
         @Override
         public void run() {
@@ -123,6 +132,32 @@ public class OrbitDialView extends View {
 
     public void setListener(Listener l) {
         listener = l;
+    }
+
+    /** When true the centre CALL button gently pulses. */
+    public void setReady(boolean isReady) {
+        if (ready == isReady) return;
+        ready = isReady;
+        if (ready) {
+            pulse = ValueAnimator.ofFloat(0f, 1f);
+            pulse.setDuration(1400);
+            pulse.setRepeatCount(ValueAnimator.INFINITE);
+            pulse.addUpdateListener(a -> {
+                pulseT = (float) a.getAnimatedValue();
+                invalidate();
+            });
+            pulse.start();
+        } else if (pulse != null) {
+            pulse.cancel();
+            pulse = null;
+            pulseT = 0;
+            invalidate();
+        }
+    }
+
+    private void addRipple(int key) {
+        ripples.add(new long[]{key, android.os.SystemClock.uptimeMillis()});
+        postInvalidateOnAnimation();
     }
 
     public void setColors(int accentColor, int callButtonColor) {
@@ -185,6 +220,7 @@ public class OrbitDialView extends View {
                     touchY = y;
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                     animateOrbitTo(keyAngle[k]);
+                    addRipple(k);
                     postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout());
                     getParent().requestDisallowInterceptTouchEvent(true);
                     invalidate();
@@ -208,6 +244,7 @@ public class OrbitDialView extends View {
                         removeCallbacks(longPressRunnable);
                         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                         animateOrbitTo(keyAngle[k]);
+                        addRipple(k);
                     }
                     invalidate();
                 } else if (centerPressed && !hitCenter(x, y)) {
@@ -279,6 +316,13 @@ public class OrbitDialView extends View {
         super.onDetachedFromWindow();
         removeCallbacks(longPressRunnable);
         if (orbitAnim != null) orbitAnim.cancel();
+        if (pulse != null) pulse.cancel();
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (ready && pulse != null && !pulse.isRunning()) pulse.start();
     }
 
     @Override
@@ -333,6 +377,32 @@ public class OrbitDialView extends View {
                 c.drawText(String.valueOf(step), keyX[i] + keyR * 0.62f, keyY[i] - keyR * 0.55f, letterPaint);
                 letterPaint.setColor(Color.argb(150, 255, 255, 255));
             }
+        }
+
+        // Touch ripples.
+        long now = android.os.SystemClock.uptimeMillis();
+        ripplePaint.setStyle(Paint.Style.STROKE);
+        ripplePaint.setStrokeWidth(dp(2));
+        for (int i = ripples.size() - 1; i >= 0; i--) {
+            long[] rp = ripples.get(i);
+            float p = (now - rp[1]) / (float) RIPPLE_MS;
+            if (p >= 1f) {
+                ripples.remove(i);
+                continue;
+            }
+            int k = (int) rp[0];
+            ripplePaint.setColor(accent);
+            ripplePaint.setAlpha((int) (200 * (1f - p)));
+            c.drawCircle(keyX[k], keyY[k], keyR * (1f + 0.6f * p), ripplePaint);
+        }
+        if (!ripples.isEmpty()) postInvalidateOnAnimation();
+
+        // Breathing glow behind the call button.
+        if (ready) {
+            float s = (float) Math.sin(pulseT * Math.PI);
+            glowPaint.setColor(callColor);
+            glowPaint.setAlpha((int) (40 + 60 * s));
+            c.drawCircle(cx, cy, centerR * (1.08f + 0.14f * s), glowPaint);
         }
 
         // Centre call button.
