@@ -56,7 +56,7 @@ public class SettingsActivity extends BaseActivity {
         TextView setBtn = isDefault ? null : Ui.button(this, "Set", Ui.FILLED, v -> Actions.askToBeDefault(this));
         body.addView(Ui.section(this, "Phone app"));
         body.addView(Ui.card(this, Ui.row(this, R.drawable.ic_call, "Default phone app",
-                isDefault ? "Orbit Dial shows incoming calls instantly and handles your calls."
+                isDefault ? "T.I Dial shows incoming calls instantly and handles your calls."
                         : "Not set. Incoming call screens, blocking and caller photos need this.", setBtn,
                 isDefault ? v -> Actions.openDefaultAppsSettings(this) : null)));
 
@@ -157,7 +157,7 @@ public class SettingsActivity extends BaseActivity {
         }
         body.addView(Ui.card(this,
                 Ui.row(this, R.drawable.ic_settings, "App permissions", null, chevron(), v -> Actions.openAppSettings(this)),
-                Ui.row(this, R.drawable.ic_phone, "Orbit Dial " + version,
+                Ui.row(this, R.drawable.ic_phone, "T.I Dial " + version,
                         "Notes and recordings are stored only on this phone.", null, null)));
     }
 
@@ -251,7 +251,7 @@ public class SettingsActivity extends BaseActivity {
             return "Records through the microphone with the call on speaker, so both voices are captured. Works on most phones.";
         }
         if (Prefs.REC_CALL_AUDIO.equals(mode)) {
-            return "Tries to record the call directly. Many phones block this, and Orbit Dial falls back to the microphone.";
+            return "Tries to record the call directly. Many phones block this, and T.I Dial falls back to the microphone.";
         }
         return "A record button appears during calls when this is on. Notes work either way.";
     }

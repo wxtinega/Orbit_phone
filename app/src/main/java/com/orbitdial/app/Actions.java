@@ -86,7 +86,7 @@ final class Actions {
         try {
             a.startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", a.getPackageName(), null)));
         } catch (RuntimeException e) {
-            Ui.snack(a, "Open Settings > Apps > Orbit Dial to change this.", null, null);
+            Ui.snack(a, "Open Settings > Apps > T.I Dial to change this.", null, null);
         }
     }
 

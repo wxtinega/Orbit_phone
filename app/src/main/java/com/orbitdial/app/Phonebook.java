@@ -50,7 +50,7 @@ final class Phonebook {
             try (InputStream in = ctx.getContentResolver().openInputStream(picked)) {
                 src = BitmapFactory.decodeStream(in, null, opts);
             }
-            if (src == null) throw new Problem("That file isn't a photo Orbit Dial can read.");
+            if (src == null) throw new Problem("That file isn't a photo T.I Dial can read.");
             int rotation = 0;
             try (InputStream in = ctx.getContentResolver().openInputStream(picked)) {
                 if (in != null) {
@@ -95,7 +95,7 @@ final class Phonebook {
                 photo.compress(Bitmap.CompressFormat.JPEG, 92, out);
             }
         } catch (SecurityException e) {
-            throw new Problem("Orbit Dial needs permission to edit contacts.");
+            throw new Problem("T.I Dial needs permission to edit contacts.");
         } catch (Problem p) {
             throw p;
         } catch (Exception e) {
@@ -111,7 +111,7 @@ final class Phonebook {
                     ContactsContract.Data.RAW_CONTACT_ID + "=? AND " + ContactsContract.Data.MIMETYPE + "=?",
                     new String[]{String.valueOf(raw), ContactsContract.CommonDataKinds.Photo.CONTENT_ITEM_TYPE});
         } catch (SecurityException e) {
-            throw new Problem("Orbit Dial needs permission to edit contacts.");
+            throw new Problem("T.I Dial needs permission to edit contacts.");
         }
     }
 
@@ -133,7 +133,7 @@ final class Phonebook {
         try {
             ctx.getContentResolver().update(ContentUris.withAppendedId(ContactsContract.Contacts.CONTENT_URI, contactId), v, null, null);
         } catch (SecurityException e) {
-            throw new Problem("Orbit Dial needs permission to edit contacts.");
+            throw new Problem("T.I Dial needs permission to edit contacts.");
         } catch (RuntimeException e) {
             throw new Problem("Couldn't update this contact. Please try again.");
         }
@@ -163,7 +163,7 @@ final class Phonebook {
         try {
             ctx.getContentResolver().insert(BlockedNumbers.CONTENT_URI, v);
         } catch (SecurityException e) {
-            throw new Problem("Make Orbit Dial your phone app to block numbers.");
+            throw new Problem("Make T.I Dial your phone app to block numbers.");
         } catch (RuntimeException e) {
             throw new Problem("Couldn't block this number. Please try again.");
         }
@@ -173,7 +173,7 @@ final class Phonebook {
         try {
             BlockedNumberContract.unblock(ctx, number);
         } catch (SecurityException e) {
-            throw new Problem("Make Orbit Dial your phone app to manage blocked numbers.");
+            throw new Problem("Make T.I Dial your phone app to manage blocked numbers.");
         } catch (RuntimeException e) {
             throw new Problem("Couldn't unblock this number. Please try again.");
         }
@@ -185,7 +185,7 @@ final class Phonebook {
                 new String[]{BlockedNumbers.COLUMN_ORIGINAL_NUMBER}, null, null, null)) {
             if (c != null) while (c.moveToNext()) out.add(c.getString(0));
         } catch (SecurityException e) {
-            throw new Problem("Make Orbit Dial your phone app to see blocked numbers.");
+            throw new Problem("Make T.I Dial your phone app to see blocked numbers.");
         } catch (RuntimeException e) {
             throw new Problem("Couldn't load blocked numbers.");
         }
@@ -205,7 +205,7 @@ final class Phonebook {
         try {
             ctx.getContentResolver().delete(CallLog.Calls.CONTENT_URI, CallLog.Calls._ID + " IN (" + in + ")", args);
         } catch (SecurityException e) {
-            throw new Problem("Orbit Dial needs permission to edit call history.");
+            throw new Problem("T.I Dial needs permission to edit call history.");
         } catch (RuntimeException e) {
             throw new Problem("Couldn't delete that. Please try again.");
         }

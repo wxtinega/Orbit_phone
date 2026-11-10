@@ -388,7 +388,7 @@ public class ContactActivity extends BaseActivity {
                 "You won't get calls or texts from this number. You can unblock it any time.", "Block", true, go);
     }
 
-    /** Runs the action once Orbit Dial is allowed to edit contacts. */
+    /** Runs the action once T.I Dial is allowed to edit contacts. */
     private void withWrite(Runnable r) {
         if (Actions.has(this, Manifest.permission.WRITE_CONTACTS)) {
             r.run();
@@ -405,7 +405,7 @@ public class ContactActivity extends BaseActivity {
         if (results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED && afterWritePermission != null) {
             afterWritePermission.run();
         } else {
-            Ui.snack(this, "Orbit Dial needs permission to edit contacts for this.", "Settings", () -> Actions.openAppSettings(this));
+            Ui.snack(this, "T.I Dial needs permission to edit contacts for this.", "Settings", () -> Actions.openAppSettings(this));
         }
         afterWritePermission = null;
     }

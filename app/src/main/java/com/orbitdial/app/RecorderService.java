@@ -15,7 +15,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-/** Records a call while it lasts. Files stay in Orbit Dial's own folder on this phone. */
+/** Records a call while it lasts. Files stay in T.I Dial's own folder on this phone. */
 public class RecorderService extends Service {
     static volatile boolean recording;
     static volatile long startedAt;

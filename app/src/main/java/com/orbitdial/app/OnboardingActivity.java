@@ -126,7 +126,7 @@ public class OnboardingActivity extends BaseActivity {
     }
 
     private View welcome() {
-        LinearLayout p = pageShell(0, "Orbit Dial", "A faster, cleaner way to call.");
+        LinearLayout p = pageShell(0, "T.I Dial", "A faster, cleaner way to call.");
         OrbitDialView preview = new OrbitDialView(this);
         preview.setStyle(OrbitDialView.ORBIT);
         preview.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
@@ -148,8 +148,8 @@ public class OnboardingActivity extends BaseActivity {
     private View phoneApp() {
         boolean isDefault = Actions.isDefaultPhoneApp(this);
         LinearLayout p = pageShell(isDefault ? R.drawable.ic_check : R.drawable.ic_call,
-                isDefault ? "You're all set" : "Make Orbit Dial your phone app",
-                isDefault ? "Orbit Dial now handles your calls." : null);
+                isDefault ? "You're all set" : "Make T.I Dial your phone app",
+                isDefault ? "T.I Dial now handles your calls." : null);
         if (!isDefault) {
             LinearLayout list = new LinearLayout(this);
             list.setOrientation(LinearLayout.VERTICAL);
@@ -209,7 +209,7 @@ public class OnboardingActivity extends BaseActivity {
     }
 
     private View permissions() {
-        LinearLayout p = pageShell(R.drawable.ic_settings, "A few permissions", "Orbit Dial only uses these on your phone.");
+        LinearLayout p = pageShell(R.drawable.ic_settings, "A few permissions", "T.I Dial only uses these on your phone.");
         List<View> rows = new ArrayList<>();
         boolean all = true;
         for (Perm x : perms()) {

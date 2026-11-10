@@ -6,7 +6,7 @@ import android.telecom.CallAudioState;
 import android.telecom.InCallService;
 
 /**
- * Android hands every call to this service once Orbit Dial is the default phone app.
+ * Android hands every call to this service once T.I Dial is the default phone app.
  * The phone itself still plays the ringtone (including per-contact ringtones);
  * this shows the call screen the moment the call arrives.
  */

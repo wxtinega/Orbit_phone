@@ -44,7 +44,7 @@ import java.util.Map;
 public class MainActivity extends BaseActivity implements OrbitDialView.Listener {
 
     static final String ACTION_CALL_SHORTCUT = "com.orbitdial.app.CALL_FAVOURITE";
-    /** Private alias: only Orbit Dial's own shortcuts and notifications can use it to start a call. */
+    /** Private alias: only T.I Dial's own shortcuts and notifications can use it to start a call. */
     static final String ALIAS = "com.orbitdial.app.CallFavourite";
     static final String EXTRA_ADD_CALL = "add_call";
     static final String EXTRA_ASSIGN_NUMBER = "assign_number", EXTRA_ASSIGN_NAME = "assign_name";
@@ -293,11 +293,14 @@ public class MainActivity extends BaseActivity implements OrbitDialView.Listener
                 blp.rightMargin = dp(8);
                 iconBox.addView(missedBadge, blp);
             }
-            item.addView(iconBox, new LinearLayout.LayoutParams(dp(64), dp(32)));
+            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(dp(64), dp(32));
+            ilp.gravity = Gravity.CENTER_HORIZONTAL;
+            item.addView(iconBox, ilp);
             TextView label = Ui.text(this, labels[i], 12, Ui.muted, true);
             label.setPadding(0, dp(4), 0, 0);
+            label.setGravity(Gravity.CENTER_HORIZONTAL);
             Ui.oneLine(label);
-            item.addView(label);
+            item.addView(label, new LinearLayout.LayoutParams(-1, -2)); // centred right under its icon
             item.setOnClickListener(Ui.tap(v -> showTab(idx, true)));
             Ui.press(item);
             navIcons[i] = ic;
@@ -951,7 +954,7 @@ public class MainActivity extends BaseActivity implements OrbitDialView.Listener
         insights.setVisibility(filter == 0 && !Data.calls.isEmpty() ? View.VISIBLE : View.GONE);
         insights.getChildAt(0).setVisibility(filter == 0 && !Data.calls.isEmpty() ? View.VISIBLE : View.GONE);
         if (!allowed) {
-            recentEmptyText.setText("Orbit Dial needs access to your call history to show it here.");
+            recentEmptyText.setText("T.I Dial needs access to your call history to show it here.");
             recentEmptyButton.setVisibility(View.VISIBLE);
         } else {
             recentEmptyText.setText(filter == 1 ? "No missed calls." : "No calls yet.");
@@ -1283,7 +1286,7 @@ public class MainActivity extends BaseActivity implements OrbitDialView.Listener
         for (Data.Contact c : Data.contacts) if (c.starred && !c.numbers.isEmpty()) favRow.addView(favourite(c, 60));
         favSection.setVisibility(q.isEmpty() && favRow.getChildCount() > 0 ? View.VISIBLE : View.GONE);
         if (!allowed) {
-            contactEmptyText.setText("Orbit Dial needs access to your contacts to show them here.");
+            contactEmptyText.setText("T.I Dial needs access to your contacts to show them here.");
             contactEmptyButton.setVisibility(View.VISIBLE);
         } else {
             contactEmptyText.setText(q.isEmpty() ? "No contacts with phone numbers yet." : "No one matches \"" + q + "\".");
