@@ -10,6 +10,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.CallLog;
 import android.provider.ContactsContract;
+import android.provider.ContactsContract.CommonDataKinds.Nickname;
+import android.provider.ContactsContract.CommonDataKinds.Phone;
 import android.util.LruCache;
 
 import java.io.InputStream;
@@ -23,17 +25,23 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Reads the phone's real contacts and call history. Nothing is uploaded anywhere. */
+/** Reads contacts and call history on the phone. Everything stays on the device. */
 final class Data {
     private Data() {}
 
-    static final ExecutorService IO = Executors.newFixedThreadPool(2);
+    static final ExecutorService IO = Executors.newFixedThreadPool(3);
     static final Handler MAIN = new Handler(Looper.getMainLooper());
 
-    static final class Phone {
+    // In-memory snapshot shared by every screen, so search and lookups are instant.
+    static volatile List<Contact> contacts = new ArrayList<>();
+    static volatile Map<String, Contact> byKey = new HashMap<>();
+    static volatile List<Call> calls = new ArrayList<>();
+    static volatile boolean loaded;
+
+    static final class Number {
         final String number, label;
 
-        Phone(String number, String label) {
+        Number(String number, String label) {
             this.number = number;
             this.label = label;
         }
@@ -41,144 +49,213 @@ final class Data {
 
     static final class Contact {
         final long id;
-        final String lookupKey;
-        final String name;
+        final String lookupKey, name;
         boolean starred;
-        String photoUri;
-        final List<Phone> phones = new ArrayList<>();
-        String t9Full = "";
+        String thumbUri, photoUri, ringtone, nickname = "";
+        final List<Number> numbers = new ArrayList<>();
+        final List<String> digits = new ArrayList<>();
+        String lowerName = "", t9Full = "";
         final List<String> t9Words = new ArrayList<>();
-        final List<String> digitsList = new ArrayList<>();
 
         Contact(long id, String lookupKey, String name) {
             this.id = id;
             this.lookupKey = lookupKey;
-            this.name = name == null || name.isEmpty() ? "Unknown" : name;
+            this.name = name == null || name.trim().isEmpty() ? "No name" : name.trim();
         }
 
-        String primaryNumber() {
-            return phones.isEmpty() ? "" : phones.get(0).number;
+        String primary() {
+            return numbers.isEmpty() ? "" : numbers.get(0).number;
         }
 
         char section() {
-            char ch = name.isEmpty() ? '#' : Character.toUpperCase(name.charAt(0));
+            if (name.isEmpty()) return '#';
+            char ch = Character.toUpperCase(name.charAt(0));
             return Character.isLetter(ch) ? ch : '#';
         }
     }
 
     static final class Call {
-        final String number, name, numberLabel;
+        final long id;
+        final String number, cachedName, numberLabel, accountId;
         final int type;
         final long date, duration;
 
-        Call(String number, String name, String numberLabel, int type, long date, long duration) {
+        Call(long id, String number, String cachedName, String numberLabel, int type, long date, long duration, String accountId) {
+            this.id = id;
             this.number = number == null ? "" : number;
-            this.name = name;
+            this.cachedName = cachedName;
             this.numberLabel = numberLabel;
             this.type = type;
             this.date = date;
             this.duration = duration;
+            this.accountId = accountId;
         }
 
         boolean missed() {
-            return type == CallLog.Calls.MISSED_TYPE || type == CallLog.Calls.REJECTED_TYPE;
+            return type == CallLog.Calls.MISSED_TYPE || type == CallLog.Calls.REJECTED_TYPE
+                    || type == CallLog.Calls.BLOCKED_TYPE;
         }
 
-        String title() {
-            if (name != null && !name.isEmpty()) return name;
-            return number.isEmpty() ? "Private number" : number;
+        boolean outgoing() {
+            return type == CallLog.Calls.OUTGOING_TYPE;
         }
     }
 
-    // ------------------------------------------------------------ contacts
+    // --------------------------------------------------------------- loading
 
-    static List<Contact> loadContacts(Context ctx) {
+    static void loadAll(Context ctx) {
+        List<Contact> c = loadContacts(ctx);
+        Map<String, Contact> map = new HashMap<>();
+        for (Contact ct : c) for (String d : ct.digits) if (!d.isEmpty()) map.put(key(d), ct);
+        contacts = c;
+        byKey = map;
+        calls = loadCalls(ctx, 600);
+        loaded = true;
+    }
+
+    private static List<Contact> loadContacts(Context ctx) {
         Map<Long, Contact> byId = new LinkedHashMap<>();
         ContentResolver cr = ctx.getContentResolver();
-        String[] proj = {
-                ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
-                ContactsContract.CommonDataKinds.Phone.LOOKUP_KEY,
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY,
-                ContactsContract.CommonDataKinds.Phone.NUMBER,
-                ContactsContract.CommonDataKinds.Phone.TYPE,
-                ContactsContract.CommonDataKinds.Phone.LABEL,
-                ContactsContract.CommonDataKinds.Phone.STARRED,
-                ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI
-        };
-        try (Cursor c = cr.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, proj, null, null,
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY + " COLLATE NOCASE ASC")) {
-            if (c == null) return new ArrayList<>();
-            while (c.moveToNext()) {
-                long id = c.getLong(0);
-                Contact ct = byId.get(id);
-                if (ct == null) {
-                    ct = new Contact(id, c.getString(1), c.getString(2));
-                    ct.starred = c.getInt(6) != 0;
-                    ct.photoUri = c.getString(7);
-                    byId.put(id, ct);
+        String[] proj = {Phone.CONTACT_ID, Phone.LOOKUP_KEY, Phone.DISPLAY_NAME_PRIMARY, Phone.NUMBER,
+                Phone.TYPE, Phone.LABEL, Phone.STARRED, Phone.PHOTO_THUMBNAIL_URI, Phone.PHOTO_URI, Phone.CUSTOM_RINGTONE};
+        try (Cursor c = cr.query(Phone.CONTENT_URI, proj, null, null, Phone.DISPLAY_NAME_PRIMARY + " COLLATE LOCALIZED ASC")) {
+            if (c != null) {
+                while (c.moveToNext()) {
+                    long id = c.getLong(0);
+                    Contact ct = byId.get(id);
+                    if (ct == null) {
+                        ct = new Contact(id, c.getString(1), c.getString(2));
+                        ct.starred = c.getInt(6) != 0;
+                        ct.thumbUri = c.getString(7);
+                        ct.photoUri = c.getString(8);
+                        ct.ringtone = c.getString(9);
+                        byId.put(id, ct);
+                    }
+                    String number = c.getString(3);
+                    if (number == null) continue;
+                    String d = digits(number);
+                    boolean dup = false;
+                    for (String existing : ct.digits) if (sameNumber(existing, d)) { dup = true; break; }
+                    if (dup) continue;
+                    CharSequence label = Phone.getTypeLabel(ctx.getResources(), c.getInt(4), c.getString(5));
+                    ct.numbers.add(new Number(number, label == null ? "" : label.toString()));
+                    ct.digits.add(d);
                 }
-                String number = c.getString(3);
-                if (number == null) continue;
-                String digits = digits(number);
-                if (ct.digitsList.contains(digits)) continue; // same number saved twice
-                CharSequence label = ContactsContract.CommonDataKinds.Phone.getTypeLabel(
-                        ctx.getResources(), c.getInt(4), c.getString(5));
-                ct.phones.add(new Phone(number, label == null ? "" : label.toString()));
-                ct.digitsList.add(digits);
             }
-        } catch (SecurityException e) {
+        } catch (RuntimeException e) {
             return new ArrayList<>();
         }
+        // Nicknames make search friendlier ("Mum" finds "Grace Wanjiru").
+        try (Cursor c = cr.query(ContactsContract.Data.CONTENT_URI, new String[]{ContactsContract.Data.CONTACT_ID, Nickname.NAME},
+                ContactsContract.Data.MIMETYPE + "=?", new String[]{Nickname.CONTENT_ITEM_TYPE}, null)) {
+            if (c != null) {
+                while (c.moveToNext()) {
+                    Contact ct = byId.get(c.getLong(0));
+                    if (ct != null && c.getString(1) != null) ct.nickname = c.getString(1);
+                }
+            }
+        } catch (RuntimeException ignored) {
+        }
         List<Contact> out = new ArrayList<>(byId.values());
-        for (Contact ct : out) buildT9(ct);
+        for (Contact ct : out) index(ct);
         return out;
     }
 
-    static List<Call> loadCalls(Context ctx, int max) {
+    private static List<Call> loadCalls(Context ctx, int max) {
         List<Call> out = new ArrayList<>();
-        String[] proj = {
-                CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.CACHED_NUMBER_LABEL,
-                CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION
-        };
-        try (Cursor c = ctx.getContentResolver().query(CallLog.Calls.CONTENT_URI, proj, null, null,
-                CallLog.Calls.DATE + " DESC")) {
+        String[] proj = {CallLog.Calls._ID, CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.CACHED_NUMBER_LABEL,
+                CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION, CallLog.Calls.PHONE_ACCOUNT_ID};
+        try (Cursor c = ctx.getContentResolver().query(CallLog.Calls.CONTENT_URI, proj, null, null, CallLog.Calls.DATE + " DESC")) {
             if (c == null) return out;
             while (c.moveToNext() && out.size() < max) {
-                out.add(new Call(c.getString(0), c.getString(1), c.getString(2), c.getInt(3), c.getLong(4), c.getLong(5)));
+                out.add(new Call(c.getLong(0), c.getString(1), c.getString(2), c.getString(3), c.getInt(4),
+                        c.getLong(5), c.getLong(6), c.getString(7)));
             }
-        } catch (SecurityException e) {
-            // permission not granted
+        } catch (RuntimeException ignored) {
         }
         return out;
     }
 
-    // ---------------------------------------------------------------- T9
+    // ----------------------------------------------------------------- lookup
 
-    private static final String T9_KEYS = "22233344455566677778889999";
-
-    static String digits(String number) {
+    static String digits(String s) {
+        if (s == null) return "";
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < number.length(); i++) {
-            char ch = number.charAt(i);
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
             if (ch >= '0' && ch <= '9') sb.append(ch);
         }
         return sb.toString();
     }
+
+    /** Last 9 digits: treats "+254 712 345 678" and "0712 345 678" as the same number. */
+    static String key(String number) {
+        String d = digits(number);
+        return d.length() > 9 ? d.substring(d.length() - 9) : d;
+    }
+
+    static boolean sameNumber(String a, String b) {
+        String da = digits(a), db = digits(b);
+        if (da.isEmpty() || db.isEmpty()) return false;
+        if (da.length() < 7 || db.length() < 7) return da.equals(db);
+        return key(da).equals(key(db));
+    }
+
+    static Contact find(String number) {
+        if (number == null) return null;
+        String d = digits(number);
+        if (d.length() < 3) return null;
+        Contact c = byKey.get(key(d));
+        if (c != null) return c;
+        if (d.length() < 7) {
+            for (Contact ct : contacts) for (String x : ct.digits) if (x.equals(d)) return ct;
+        }
+        return null;
+    }
+
+    static Contact byId(long id) {
+        for (Contact c : contacts) if (c.id == id) return c;
+        return null;
+    }
+
+    static String nameFor(String number) {
+        Contact c = find(number);
+        return c != null ? c.name : null;
+    }
+
+    /** Direct, fast lookup used for incoming calls before the full list is loaded. */
+    static String[] quickLookup(Context ctx, String number) {
+        if (number == null || number.isEmpty()) return null;
+        Uri uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number));
+        try (Cursor c = ctx.getContentResolver().query(uri, new String[]{ContactsContract.PhoneLookup.DISPLAY_NAME,
+                ContactsContract.PhoneLookup.PHOTO_URI, ContactsContract.PhoneLookup._ID, ContactsContract.PhoneLookup.LOOKUP_KEY}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                return new String[]{c.getString(0), c.getString(1), String.valueOf(c.getLong(2)), c.getString(3)};
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return null;
+    }
+
+    // ----------------------------------------------------------------- search
+
+    private static final String T9 = "22233344455566677778889999";
 
     private static String t9(String word) {
         StringBuilder sb = new StringBuilder();
         String w = word.toLowerCase(Locale.ROOT);
         for (int i = 0; i < w.length(); i++) {
             char ch = w.charAt(i);
-            if (ch >= 'a' && ch <= 'z') sb.append(T9_KEYS.charAt(ch - 'a'));
+            if (ch >= 'a' && ch <= 'z') sb.append(T9.charAt(ch - 'a'));
             else if (ch >= '0' && ch <= '9') sb.append(ch);
         }
         return sb.toString();
     }
 
-    private static void buildT9(Contact ct) {
+    private static void index(Contact ct) {
+        ct.lowerName = (ct.name + " " + ct.nickname).toLowerCase(Locale.getDefault());
         StringBuilder full = new StringBuilder();
-        for (String w : ct.name.split("\\s+")) {
+        for (String w : (ct.name + " " + ct.nickname).split("\\s+")) {
             String t = t9(w);
             if (!t.isEmpty()) {
                 ct.t9Words.add(t);
@@ -190,72 +267,83 @@ final class Data {
 
     static final class Match {
         final Contact contact;
-        final Phone phone;
-        final boolean byName;
+        final Number number;
+        final int score;
 
-        Match(Contact contact, Phone phone, boolean byName) {
+        Match(Contact contact, Number number, int score) {
             this.contact = contact;
-            this.phone = phone;
-            this.byName = byName;
+            this.number = number;
+            this.score = score;
         }
     }
 
-    /** Smart dial search: typed digits match phone numbers or names spelled on the keypad (T9). */
-    static List<Match> search(List<Contact> contacts, String typed, int limit) {
-        String q = digits(typed);
-        List<Match> exact = new ArrayList<>(), name = new ArrayList<>(), contains = new ArrayList<>();
-        if (q.length() < 2 || contacts == null) return exact;
+    /**
+     * One search for everything: name, nickname, number, or a name spelled on the keypad.
+     * Best matches first (starts-with beats contains, favourites break ties).
+     */
+    static List<Match> search(String query, boolean keypad, int limit) {
+        List<Match> out = new ArrayList<>();
+        if (query == null) return out;
+        String q = query.trim().toLowerCase(Locale.getDefault());
+        if (q.isEmpty()) return out;
+        String qd = digits(q);
+        boolean digitsOnly = qd.length() == q.replace(" ", "").replace("+", "").length();
         for (Contact ct : contacts) {
-            if (ct.phones.isEmpty()) continue;
-            boolean found = false;
-            for (int i = 0; i < ct.digitsList.size(); i++) {
-                String d = ct.digitsList.get(i);
-                if (d.startsWith(q) || sameNumber(d, q)) {
-                    exact.add(new Match(ct, ct.phones.get(i), false));
-                    found = true;
-                    break;
-                } else if (d.contains(q)) {
-                    contains.add(new Match(ct, ct.phones.get(i), false));
-                    found = true;
-                    break;
+            if (ct.numbers.isEmpty()) continue;
+            int score = 0;
+            Number hit = ct.numbers.get(0);
+            if (!keypad || !digitsOnly) {
+                if (ct.lowerName.startsWith(q)) score = 100;
+                else if (ct.lowerName.contains(" " + q)) score = 90;
+                else if (ct.lowerName.contains(q)) score = 60;
+            }
+            if (qd.length() >= 2) {
+                for (int i = 0; i < ct.digits.size(); i++) {
+                    String d = ct.digits.get(i);
+                    int s = d.startsWith(qd) || key(d).startsWith(qd) ? 95 : d.contains(qd) ? 70 : 0;
+                    if (s > score) {
+                        score = s;
+                        hit = ct.numbers.get(i);
+                    }
+                }
+                if (keypad && digitsOnly) {
+                    int s = 0;
+                    if (ct.t9Full.startsWith(qd)) s = 85;
+                    else for (String w : ct.t9Words) if (w.startsWith(qd)) { s = 80; break; }
+                    if (s > score) {
+                        score = s;
+                        hit = ct.numbers.get(0);
+                    }
                 }
             }
-            if (found) continue;
-            boolean nameHit = ct.t9Full.startsWith(q);
-            if (!nameHit) for (String w : ct.t9Words) if (w.startsWith(q)) { nameHit = true; break; }
-            if (nameHit) name.add(new Match(ct, ct.phones.get(0), true));
+            if (score > 0) out.add(new Match(ct, hit, score + (ct.starred ? 3 : 0)));
         }
-        List<Match> all = new ArrayList<>(exact);
-        all.addAll(name);
-        all.addAll(contains);
-        return all.size() > limit ? new ArrayList<>(all.subList(0, limit)) : all;
+        Collections.sort(out, (a, b) -> b.score != a.score ? b.score - a.score : a.contact.name.compareToIgnoreCase(b.contact.name));
+        return out.size() > limit ? new ArrayList<>(out.subList(0, limit)) : out;
     }
 
-    /** Compares the last 9 digits so "+254712..." and "0712..." count as the same number. */
-    static boolean sameNumber(String a, String b) {
-        String da = digits(a), db = digits(b);
-        if (da.length() < 7 || db.length() < 7) return da.equals(db) && !da.isEmpty();
-        int n = Math.min(9, Math.min(da.length(), db.length()));
-        return da.substring(da.length() - n).equals(db.substring(db.length() - n));
-    }
+    // ----------------------------------------------------------------- photos
 
-    static Contact findByNumber(List<Contact> contacts, String number) {
-        if (contacts == null || number == null || number.isEmpty()) return null;
-        for (Contact ct : contacts) for (String d : ct.digitsList) if (sameNumber(d, number)) return ct;
-        return null;
-    }
-
-    // -------------------------------------------------------------- photos
-
-    private static final LruCache<String, Bitmap> PHOTOS = new LruCache<String, Bitmap>(4 * 1024 * 1024) {
+    private static final LruCache<String, Bitmap> PHOTOS = new LruCache<String, Bitmap>(8 * 1024 * 1024) {
         @Override
-        protected int sizeOf(String key, Bitmap value) {
-            return value.getByteCount();
+        protected int sizeOf(String k, Bitmap v) {
+            return v.getByteCount();
         }
     };
     private static final Map<String, Boolean> MISSING = Collections.synchronizedMap(new HashMap<>());
 
-    /** Loads a contact photo off the main thread and shows it if the avatar still shows that contact. */
+    static void forgetPhoto(String uri) {
+        if (uri == null) return;
+        PHOTOS.remove(uri);
+        MISSING.remove(uri);
+    }
+
+    static void clearPhotos() {
+        PHOTOS.evictAll();
+        MISSING.clear();
+    }
+
+    /** Loads a photo off the main thread; only shows it if the avatar still belongs to that person. */
     static void bindPhoto(Context ctx, AvatarView view, String uri) {
         view.setBoundKey(uri);
         if (uri == null || MISSING.containsKey(uri)) return;
@@ -266,17 +354,21 @@ final class Data {
         }
         Context app = ctx.getApplicationContext();
         IO.execute(() -> {
-            Bitmap b = null;
-            try (InputStream in = app.getContentResolver().openInputStream(Uri.parse(uri))) {
-                if (in != null) b = BitmapFactory.decodeStream(in);
-            } catch (Exception ignored) {
-            }
-            final Bitmap result = b;
-            if (result == null) MISSING.put(uri, true);
-            else PHOTOS.put(uri, result);
+            Bitmap b = loadBitmap(app, uri);
+            if (b == null) MISSING.put(uri, true);
+            else PHOTOS.put(uri, b);
             MAIN.post(() -> {
-                if (result != null && uri.equals(view.getBoundKey())) view.setPhoto(result);
+                if (b != null && uri.equals(view.getBoundKey())) view.setPhoto(b);
             });
         });
+    }
+
+    static Bitmap loadBitmap(Context ctx, String uri) {
+        if (uri == null) return null;
+        try (InputStream in = ctx.getContentResolver().openInputStream(Uri.parse(uri))) {
+            return in == null ? null : BitmapFactory.decodeStream(in);
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

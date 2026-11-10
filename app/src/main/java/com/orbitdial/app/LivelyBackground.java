@@ -4,37 +4,32 @@ import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
-import android.graphics.RadialGradient;
-import android.graphics.Shader;
 import android.view.View;
-import android.view.animation.LinearInterpolator;
 
-/** Slowly drifting colour glows behind the whole app. */
+/** A small dot that gently pulses: used for "recording" and "call in progress" indicators. */
 class LivelyBackground extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private float t;
     private ValueAnimator anim;
-    private int mood = Ui.ACCENT;
+    private float t;
+    private int color;
 
-    LivelyBackground(Context c) {
+    LivelyBackground(Context c, int color) {
         super(c);
+        this.color = color;
+        setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
     }
 
-    /** Shifts the main glow colour, e.g. green while a number is ready to call. */
-    void setMood(int color) {
-        if (mood != color) {
-            mood = color;
-            invalidate();
-        }
+    void setColor(int c) {
+        color = c;
+        invalidate();
     }
 
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        anim = ValueAnimator.ofFloat(0f, (float) (Math.PI * 2));
-        anim.setDuration(14000);
+        anim = ValueAnimator.ofFloat(0f, 1f);
+        anim.setDuration(1200);
         anim.setRepeatCount(ValueAnimator.INFINITE);
-        anim.setInterpolator(new LinearInterpolator());
         anim.addUpdateListener(a -> {
             t = (float) a.getAnimatedValue();
             invalidate();
@@ -50,21 +45,11 @@ class LivelyBackground extends View {
 
     @Override
     protected void onDraw(Canvas c) {
-        float w = getWidth(), h = getHeight();
-        if (w <= 0 || h <= 0) return;
-        c.drawColor(Ui.BG);
-        float r = Math.max(w, h) * 0.55f;
-        glow(c, w * (0.25f + 0.15f * (float) Math.sin(t)), h * (0.22f + 0.08f * (float) Math.cos(t * 2)), r, withAlpha(mood, 70));
-        glow(c, w * (0.8f + 0.12f * (float) Math.cos(t)), h * (0.7f + 0.1f * (float) Math.sin(t)), r * 0.9f, withAlpha(Ui.CYAN, 40));
-        glow(c, w * (0.5f + 0.3f * (float) Math.sin(t * 0.5f)), h * 1.05f, r * 0.8f, withAlpha(0xFFF472B6, 28));
-    }
-
-    private void glow(Canvas c, float x, float y, float r, int color) {
-        paint.setShader(new RadialGradient(x, y, r, color, color & 0x00FFFFFF, Shader.TileMode.CLAMP));
-        c.drawCircle(x, y, r, paint);
-    }
-
-    private static int withAlpha(int color, int alpha) {
-        return (alpha << 24) | (color & 0x00FFFFFF);
+        float r = Math.min(getWidth(), getHeight()) / 2f;
+        float cx = getWidth() / 2f, cy = getHeight() / 2f;
+        paint.setColor(Ui.alpha(color, (int) (0x55 * (1f - t))));
+        c.drawCircle(cx, cy, r * (0.5f + 0.5f * t), paint);
+        paint.setColor(color);
+        c.drawCircle(cx, cy, r * 0.45f, paint);
     }
 }

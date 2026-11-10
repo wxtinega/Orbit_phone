@@ -1,42 +1,31 @@
 package com.orbitdial.app;
 
 import android.Manifest;
-import android.animation.LayoutTransition;
-import android.app.Activity;
-import android.app.AlertDialog;
-import android.app.Dialog;
-import android.content.ActivityNotFoundException;
-import android.content.ClipData;
-import android.content.ClipboardManager;
-import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
-import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
-import android.graphics.Color;
+import android.database.ContentObserver;
 import android.graphics.Typeface;
-import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.Drawable;
 import android.media.AudioManager;
 import android.media.ToneGenerator;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.CallLog;
 import android.provider.ContactsContract;
 import android.provider.Settings;
 import android.telephony.PhoneNumberUtils;
-import android.telephony.TelephonyManager;
 import android.text.Editable;
-import android.text.InputType;
+import android.text.SpannableString;
+import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.text.style.ForegroundColorSpan;
+import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.Window;
-import android.view.animation.AnimationUtils;
-import android.view.animation.LayoutAnimationController;
+import android.view.animation.DecelerateInterpolator;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.AbsListView;
 import android.widget.BaseAdapter;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -45,109 +34,131 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
-public class MainActivity extends Activity implements OrbitDialView.Listener {
+public class MainActivity extends BaseActivity implements OrbitDialView.Listener {
 
-    private static final int REQ_PERMS = 41;
-    private static final int REQ_CALL = 42;
-    private static final String[] DATA_PERMS = {
-            Manifest.permission.READ_CONTACTS, Manifest.permission.READ_CALL_LOG, Manifest.permission.CALL_PHONE};
-    private static final int TAB_KEYPAD = 0, TAB_RECENTS = 1, TAB_CONTACTS = 2;
+    static final String ACTION_CALL_SHORTCUT = "com.orbitdial.app.CALL_FAVOURITE";
+    /** Private alias: only Orbit Dial's own shortcuts and notifications can use it to start a call. */
+    static final String ALIAS = "com.orbitdial.app.CallFavourite";
+    static final String EXTRA_ADD_CALL = "add_call";
+    static final String EXTRA_ASSIGN_NUMBER = "assign_number", EXTRA_ASSIGN_NAME = "assign_name";
+    static final String EXTRA_TAB = "tab";
+    static final int KEYPAD = 0, RECENTS = 1, CONTACTS = 2;
 
+    private int tab = KEYPAD;
     private final StringBuilder number = new StringBuilder();
-    private List<Data.Contact> contacts = new ArrayList<>();
-    private List<Data.Call> calls = new ArrayList<>();
     private Stores.GestureStore gestures;
-    private SharedPreferences prefs;
     private ToneGenerator tones;
-    private String countryIso;
-    private String pendingCallNumber, pendingCallLabel;
-    private String pickForGesture;          // a new gesture waiting for the user to choose a contact
-    private Data.Contact assignContact;     // a contact waiting for the user to draw a gesture
-    private Data.Phone assignPhone;
-    private int tab = TAB_KEYPAD;
-    private boolean missedOnly;
-    private String query = "";
+    private String country;
+    private boolean addCallMode;
+    private String assignNumber, assignName, pickPattern;
 
-    private LivelyBackground bg;
     private final View[] pages = new View[3];
-    private final TextView[] tabLabels = new TextView[3];
-    private final ImageView[] tabIcons = new ImageView[3];
-    private View tabIndicator;
-    private FrameLayout tabBar;
-    private TextView recentsBadge;
+    private final ImageView[] navIcons = new ImageView[3];
+    private final TextView[] navLabels = new TextView[3];
+    private final View[] navPills = new View[3];
+    private TextView missedBadge;
 
-    // Keypad
-    private TextView numberView, matchView, hintView;
-    private LinearLayout suggestBox, keypadActions;
-    private TextView addContactPill;
+    // keypad
+    private TextView numberView, matchView, banner;
+    private LinearLayout topArea;
     private OrbitDialView dial;
+    private View backspace, messageBtn, callBtn, whatsAppBtn, addContactBtn;
 
-    // Recents
-    private final RecentsAdapter recentsAdapter = new RecentsAdapter();
-    private ListView recentsList;
-    private TextView statToday, statTalk, statMissed, statTop, chipAll, chipMissed;
-    private LinearLayout recentsEmpty;
-    private TextView recentsEmptyText, recentsEmptyBtn;
+    // recents
+    private final RecentsAdapter recents = new RecentsAdapter();
+    private ListView recentList;
+    private LinearLayout recentEmpty, insights;
+    private TextView recentEmptyText, recentEmptyButton, statToday, statTalk, statMissed, statTop;
+    private int filter; // 0 all, 1 missed, 2 incoming, 3 outgoing
+    private final TextView[] filterChips = new TextView[4];
 
-    // Contacts
+    // contacts
     private final ContactsAdapter contactsAdapter = new ContactsAdapter();
-    private ListView contactsList;
-    private EditText searchBox;
-    private LinearLayout favRow, favSection;
-    private TextView contactsSub, pickBanner;
-    private LinearLayout contactsEmpty;
-    private TextView contactsEmptyText, contactsEmptyBtn;
+    private ListView contactList;
+    private EditText search;
+    private LinearLayout favSection, favRow, contactEmpty;
+    private TextView contactCount, contactEmptyText, contactEmptyButton, pickBanner;
 
-    // =================================================================== lifecycle
+    private final ContentObserver observer = new ContentObserver(Data.MAIN) {
+        @Override
+        public void onChange(boolean self) {
+            Data.MAIN.removeCallbacks(reload);
+            Data.MAIN.postDelayed(reload, 400);
+        }
+    };
+    private final Runnable reload = this::reload;
+
+    // ================================================================ lifecycle
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        prefs = getSharedPreferences("app", MODE_PRIVATE);
-        gestures = new Stores.GestureStore(this);
-        countryIso = detectCountry();
-        try {
-            tones = new ToneGenerator(AudioManager.STREAM_DTMF, 60);
-        } catch (RuntimeException e) {
-            tones = null;
+        Intent in = getIntent();
+        if (!Prefs.onboarded(this) && !in.getBooleanExtra("skip_setup", false)) {
+            startActivity(new Intent(this, OnboardingActivity.class));
+            finish();
+            return;
         }
-
-        setContentView(buildRoot());
-
+        if (in.getBooleanExtra("skip_setup", false)) Prefs.setOnboarded(this);
+        gestures = new Stores.GestureStore(this);
+        country = Actions.country(this);
+        setContentView(build());
         if (state != null) {
             number.append(state.getString("number", ""));
-            tab = state.getInt("tab", TAB_KEYPAD);
-        } else {
-            readDialIntent(getIntent());
+            tab = state.getInt("tab", KEYPAD);
         }
+        handleIntent(in);
         showTab(tab, false);
-        refreshKeypad();
-        refreshRecents(false);
-        refreshContacts();
-        askForPermissionsOnce();
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        reloadData(); // picks up the call you just made, new contacts, etc.
+        refreshAll();
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        if (readDialIntent(intent)) {
-            showTab(TAB_KEYPAD, true);
-            refreshKeypad();
+        setIntent(intent);
+        handleIntent(intent);
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        watch();
+        if (Prefs.dialTones(this) && tones == null) {
+            try {
+                tones = new ToneGenerator(AudioManager.STREAM_DTMF, 55);
+            } catch (RuntimeException e) {
+                tones = null;
+            }
+        }
+    }
+
+    /** Watch contacts and call history so lists update by themselves. */
+    private void watch() {
+        getContentResolver().unregisterContentObserver(observer);
+        try {
+            if (Actions.has(this, Manifest.permission.READ_CONTACTS))
+                getContentResolver().registerContentObserver(ContactsContract.Contacts.CONTENT_URI, true, observer);
+            if (Actions.has(this, Manifest.permission.READ_CALL_LOG))
+                getContentResolver().registerContentObserver(CallLog.Calls.CONTENT_URI, true, observer);
+        } catch (RuntimeException ignored) {
+        }
+        reload();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        getContentResolver().unregisterContentObserver(observer);
+        if (tones != null) {
+            tones.release();
+            tones = null;
         }
     }
 
@@ -159,429 +170,512 @@ public class MainActivity extends Activity implements OrbitDialView.Listener {
     }
 
     @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        if (tones != null) tones.release();
-    }
-
-    @Override
     public void onBackPressed() {
-        if (pickForGesture != null) {
+        if (pickPattern != null) {
             cancelPick();
-        } else if (tab != TAB_KEYPAD) {
-            showTab(TAB_KEYPAD, true);
+        } else if (tab != KEYPAD) {
+            showTab(KEYPAD, true);
+        } else if (number.length() > 0) {
+            number.setLength(0);
+            refreshKeypad();
         } else {
             super.onBackPressed();
         }
     }
 
-    private boolean readDialIntent(Intent intent) {
-        if (intent == null) return false;
-        Uri data = intent.getData();
+    private void handleIntent(Intent in) {
+        if (in == null) return;
+        String action = in.getAction();
+        boolean fromAlias = in.getComponent() != null && ALIAS.equals(in.getComponent().getClassName());
+        if (ACTION_CALL_SHORTCUT.equals(action) && fromAlias) {
+            String n = in.getStringExtra("number");
+            if (n != null) Actions.call(this, n);
+            return;
+        }
+        Uri data = in.getData();
         if (data != null && "tel".equalsIgnoreCase(data.getScheme())) {
-            String n = data.getSchemeSpecificPart();
-            if (n != null) {
-                number.setLength(0);
-                number.append(n.replaceAll("[^0-9+*#]", ""));
-                return true;
-            }
+            number.setLength(0);
+            number.append(data.getSchemeSpecificPart().replaceAll("[^0-9+*#,;]", ""));
+            tab = KEYPAD;
+        } else if (Intent.ACTION_VIEW.equals(action) && in.getType() != null && in.getType().contains("calls")) {
+            tab = RECENTS;
         }
-        return false;
-    }
-
-    // ================================================================= permissions
-
-    private boolean has(String perm) {
-        return checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED;
-    }
-
-    private void askForPermissionsOnce() {
-        if (prefs.getBoolean("asked_perms", false)) return;
-        List<String> missing = new ArrayList<>();
-        for (String p : DATA_PERMS) if (!has(p)) missing.add(p);
-        if (!missing.isEmpty()) {
-            prefs.edit().putBoolean("asked_perms", true).apply();
-            requestPermissions(missing.toArray(new String[0]), REQ_PERMS);
+        if (in.hasExtra(EXTRA_TAB)) tab = in.getIntExtra(EXTRA_TAB, KEYPAD);
+        addCallMode = in.getBooleanExtra(EXTRA_ADD_CALL, false);
+        if (addCallMode) {
+            tab = KEYPAD;
+            number.setLength(0);
+        }
+        if (in.hasExtra(EXTRA_ASSIGN_NUMBER)) {
+            assignNumber = in.getStringExtra(EXTRA_ASSIGN_NUMBER);
+            assignName = in.getStringExtra(EXTRA_ASSIGN_NAME);
+            tab = KEYPAD;
+        }
+        if (pages[0] != null) {
+            showTab(tab, false);
+            refreshKeypad();
         }
     }
 
-    /** Ask again, or send the user to Settings if Android won't show the prompt any more. */
-    private void requestOrOpenSettings(String perm) {
-        if (shouldShowRequestPermissionRationale(perm) || !prefs.getBoolean("asked_" + perm, false)) {
-            prefs.edit().putBoolean("asked_" + perm, true).apply();
-            requestPermissions(new String[]{perm}, REQ_PERMS);
-        } else {
-            toast("Turn on the permission under Permissions");
-            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.fromParts("package", getPackageName(), null)));
+    private void reload() {
+        boolean contactsOk = Actions.has(this, Manifest.permission.READ_CONTACTS);
+        boolean callsOk = Actions.has(this, Manifest.permission.READ_CALL_LOG);
+        if (!contactsOk && !callsOk) {
+            refreshAll();
+            return;
         }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
-        super.onRequestPermissionsResult(code, perms, results);
-        if (code == REQ_CALL && pendingCallNumber != null) {
-            boolean granted = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
-            startCall(pendingCallNumber, granted ? Intent.ACTION_CALL : Intent.ACTION_DIAL);
-            pendingCallNumber = null;
-            pendingCallLabel = null;
-        }
-        reloadData();
-    }
-
-    // ======================================================================= data
-
-    private void reloadData() {
-        final boolean canContacts = has(Manifest.permission.READ_CONTACTS);
-        final boolean canCalls = has(Manifest.permission.READ_CALL_LOG);
-        final Context app = getApplicationContext();
         Data.IO.execute(() -> {
-            List<Data.Contact> c = canContacts ? Data.loadContacts(app) : new ArrayList<>();
-            List<Data.Call> l = canCalls ? Data.loadCalls(app, 400) : new ArrayList<>();
+            Data.loadAll(getApplicationContext());
+            Actions.updateShortcuts(getApplicationContext());
             runOnUiThread(() -> {
-                if (isDestroyed()) return;
-                contacts = c;
-                calls = l;
-                refreshRecents(false);
-                refreshContacts();
-                refreshKeypad();
+                if (!isDestroyed()) refreshAll();
             });
         });
     }
 
-    // ======================================================================= shell
-
-    private int dp(float v) {
-        return Ui.dp(this, v);
+    private void refreshAll() {
+        refreshKeypad();
+        refreshRecents();
+        refreshContacts();
     }
 
-    private View buildRoot() {
-        FrameLayout root = new FrameLayout(this);
-        bg = new LivelyBackground(this);
-        root.addView(bg, new FrameLayout.LayoutParams(-1, -1));
+    // ===================================================================== shell
 
+    private View build() {
+        FrameLayout root = new FrameLayout(this);
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         root.addView(col, new FrameLayout.LayoutParams(-1, -1));
-
         FrameLayout pager = new FrameLayout(this);
         col.addView(pager, new LinearLayout.LayoutParams(-1, 0, 1f));
-        pages[TAB_KEYPAD] = buildKeypad();
-        pages[TAB_RECENTS] = buildRecents();
-        pages[TAB_CONTACTS] = buildContacts();
+        pages[KEYPAD] = buildKeypad();
+        pages[RECENTS] = buildRecents();
+        pages[CONTACTS] = buildContacts();
         for (View p : pages) {
             p.setVisibility(View.GONE);
             pager.addView(p, new FrameLayout.LayoutParams(-1, -1));
         }
-        col.addView(buildTabBar());
+        col.addView(buildNav());
+        Ui.applyWindow(this, col);
         return root;
     }
 
-    private View buildTabBar() {
-        tabBar = new FrameLayout(this);
-        tabBar.setBackground(Ui.round(0xE6161C33, dp(30)));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(64));
-        lp.setMargins(dp(14), dp(4), dp(14), dp(14));
-        tabBar.setLayoutParams(lp);
-
-        tabIndicator = new View(this);
-        tabIndicator.setBackground(Ui.round(0x557C5CFF, dp(24)));
-        FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(0, -1);
-        ilp.setMargins(0, dp(6), 0, dp(6));
-        tabBar.addView(tabIndicator, ilp);
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        tabBar.addView(row, new FrameLayout.LayoutParams(-1, -1));
-
+    private View buildNav() {
+        LinearLayout nav = new LinearLayout(this);
+        nav.setBackground(Ui.glassCard(this, 28, true));
+        nav.setPadding(dp(6), dp(6), dp(6), dp(6));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(dp(14), dp(6), dp(14), dp(10));
+        nav.setLayoutParams(lp);
         String[] labels = {"Keypad", "Recents", "Contacts"};
         int[] icons = {R.drawable.ic_dialpad, R.drawable.ic_history, R.drawable.ic_person};
         for (int i = 0; i < 3; i++) {
-            final int index = i;
+            final int idx = i;
             LinearLayout item = new LinearLayout(this);
             item.setOrientation(LinearLayout.VERTICAL);
             item.setGravity(Gravity.CENTER);
-            item.setOnClickListener(v -> {
-                v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-                showTab(index, true);
-            });
-
-            FrameLayout iconWrap = new FrameLayout(this);
-            ImageView icon = new ImageView(this);
-            icon.setImageResource(icons[i]);
-            iconWrap.addView(icon, new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-            if (i == TAB_RECENTS) {
-                recentsBadge = Ui.text(this, "", 10, Color.WHITE, true);
-                recentsBadge.setGravity(Gravity.CENTER);
-                recentsBadge.setBackground(Ui.round(Ui.RED, dp(9)));
-                recentsBadge.setPadding(dp(5), 0, dp(5), 0);
-                recentsBadge.setMinWidth(dp(18));
-                recentsBadge.setVisibility(View.GONE);
-                FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(-2, dp(18), Gravity.TOP | Gravity.END);
-                iconWrap.addView(recentsBadge, blp);
+            item.setMinimumHeight(dp(56));
+            item.setContentDescription(labels[i]);
+            FrameLayout iconBox = new FrameLayout(this);
+            View pill = new View(this);
+            pill.setBackground(Ui.round(Ui.alpha(Ui.accent, Ui.dark ? 0x38 : 0x24), dp(16)));
+            iconBox.addView(pill, new FrameLayout.LayoutParams(dp(60), dp(32), Gravity.CENTER));
+            ImageView ic = Ui.icon(this, icons[i], Ui.muted);
+            iconBox.addView(ic, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+            if (i == RECENTS) {
+                missedBadge = Ui.text(this, "", 11, 0xFFFFFFFF, true);
+                missedBadge.setGravity(Gravity.CENTER);
+                missedBadge.setBackground(Ui.round(Ui.danger, dp(9)));
+                missedBadge.setMinWidth(dp(18));
+                missedBadge.setPadding(dp(5), dp(2), dp(5), dp(2));
+                missedBadge.setVisibility(View.GONE);
+                FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
+                blp.rightMargin = dp(8);
+                iconBox.addView(missedBadge, blp);
             }
-            item.addView(iconWrap, new LinearLayout.LayoutParams(dp(40), dp(26)));
-
-            TextView label = Ui.text(this, labels[i], 11, Ui.MUTED, true);
-            label.setPadding(0, dp(2), 0, 0);
+            item.addView(iconBox, new LinearLayout.LayoutParams(dp(64), dp(32)));
+            TextView label = Ui.text(this, labels[i], 12, Ui.muted, true);
+            label.setPadding(0, dp(4), 0, 0);
+            Ui.oneLine(label);
             item.addView(label);
-            tabIcons[i] = icon;
-            tabLabels[i] = label;
-            row.addView(item, new LinearLayout.LayoutParams(0, -1, 1f));
+            item.setOnClickListener(Ui.tap(v -> showTab(idx, true)));
+            Ui.press(item);
+            navIcons[i] = ic;
+            navLabels[i] = label;
+            navPills[i] = pill;
+            nav.addView(item, new LinearLayout.LayoutParams(0, -2, 1f));
         }
-        tabBar.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            int w = (r - l) / 3;
-            ViewGroup.LayoutParams p = tabIndicator.getLayoutParams();
-            if (p.width != w - dp(12)) {
-                p.width = w - dp(12);
-                tabIndicator.setLayoutParams(p);
-            }
-            tabIndicator.setTranslationX(tab * w + dp(6));
-        });
-        return tabBar;
+        return nav;
     }
 
     private void showTab(int t, boolean animate) {
-        View in = pages[t];
-        View out = pages[tab];
+        View in = pages[t], out = pages[tab];
         if (animate && t != tab) {
-            int dir = t > tab ? 1 : -1;
             in.setAlpha(0f);
-            in.setTranslationX(dir * dp(28));
+            in.setTranslationY(dp(10));
             in.setVisibility(View.VISIBLE);
-            in.animate().alpha(1f).translationX(0f).setDuration(240).start();
-            out.animate().alpha(0f).translationX(-dir * dp(28)).setDuration(160).withEndAction(() -> {
+            in.animate().alpha(1f).translationY(0).setDuration(220).setInterpolator(new DecelerateInterpolator()).start();
+            out.animate().alpha(0f).setDuration(120).withEndAction(() -> {
                 if (pages[tab] != out) out.setVisibility(View.GONE);
                 out.setAlpha(1f);
-                out.setTranslationX(0f);
             }).start();
         } else {
             for (View p : pages) p.setVisibility(p == in ? View.VISIBLE : View.GONE);
         }
         tab = t;
-        int w = tabBar.getWidth() / 3;
-        if (w > 0) tabIndicator.animate().translationX(t * w + dp(6)).setDuration(260).start();
         for (int i = 0; i < 3; i++) {
-            int color = i == t ? Color.WHITE : Ui.MUTED;
-            tabLabels[i].setTextColor(color);
-            tabIcons[i].setImageTintList(ColorStateList.valueOf(color));
+            boolean on = i == t;
+            navIcons[i].setImageTintList(ColorStateList.valueOf(on ? Ui.accent : Ui.muted));
+            navLabels[i].setTextColor(on ? Ui.text : Ui.muted);
+            navPills[i].animate().alpha(on ? 1f : 0f).scaleX(on ? 1f : 0.6f).setDuration(200).start();
         }
-        if (t != TAB_CONTACTS) hideKeyboard();
-        if (t == TAB_RECENTS) {
-            prefs.edit().putLong("recents_seen", System.currentTimeMillis()).apply();
+        if (t != CONTACTS) hideKeyboard();
+        if (t == RECENTS) {
+            Prefs.sp(this).edit().putLong("recents_seen", System.currentTimeMillis()).apply();
+            try {
+                getSystemService(android.telecom.TelecomManager.class).cancelMissedCallsNotification();
+            } catch (RuntimeException ignored) {
+            }
+            getSystemService(android.app.NotificationManager.class).cancel(CallNotifier.ID_MISSED);
             updateBadge();
-            recentsList.scheduleLayoutAnimation();
         }
-        if (t == TAB_CONTACTS) contactsList.scheduleLayoutAnimation();
     }
 
     private void hideKeyboard() {
-        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-        if (imm != null && searchBox != null) imm.hideSoftInputFromWindow(searchBox.getWindowToken(), 0);
+        InputMethodManager imm = getSystemService(InputMethodManager.class);
+        if (imm != null && search != null) imm.hideSoftInputFromWindow(search.getWindowToken(), 0);
     }
 
     private LinearLayout page() {
-        LinearLayout v = new LinearLayout(this);
-        v.setOrientation(LinearLayout.VERTICAL);
-        v.setPadding(dp(20), dp(22), dp(20), 0);
-        return v;
+        LinearLayout p = new LinearLayout(this);
+        p.setOrientation(LinearLayout.VERTICAL);
+        p.setPadding(dp(16), dp(8), dp(16), 0);
+        return p;
     }
 
-    private LinearLayout titleRow(String title, View right) {
+    private LinearLayout header(String titleText, View... right) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        TextView t = Ui.text(this, title, 28, Color.WHITE, true);
-        row.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
-        if (right != null) row.addView(right);
+        row.setMinimumHeight(dp(56));
+        row.setPadding(dp(4), 0, 0, 0);
+        row.addView(Ui.title(this, titleText), new LinearLayout.LayoutParams(0, -2, 1f));
+        for (View v : right) row.addView(v);
         return row;
     }
 
-    private ImageView iconButton(int res, int tint, int bgColor, float sizeDp, View.OnClickListener click) {
-        ImageView b = new ImageView(this);
-        b.setImageResource(res);
-        b.setImageTintList(ColorStateList.valueOf(tint));
-        int pad = dp(sizeDp * 0.25f);
-        b.setPadding(pad, pad, pad, pad);
-        b.setBackground(Ui.rippleBg(bgColor, dp(sizeDp / 2f)));
-        b.setOnClickListener(click);
-        b.setLayoutParams(new LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)));
-        return b;
-    }
-
-    private LayoutAnimationController listAnimation() {
-        LayoutAnimationController c = new LayoutAnimationController(
-                AnimationUtils.loadAnimation(this, android.R.anim.fade_in), 0.06f);
-        c.setOrder(LayoutAnimationController.ORDER_NORMAL);
-        return c;
-    }
-
-    private LinearLayout emptyState(String msg, String button, View.OnClickListener click, TextView[] outRefs) {
+    private LinearLayout emptyState(String button, Runnable onButton, TextView[] refs) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
-        box.setPadding(dp(24), dp(24), dp(24), dp(24));
-        TextView t = Ui.text(this, msg, 15, Ui.MUTED, false);
+        box.setPadding(dp(32), dp(24), dp(32), dp(48));
+        TextView t = Ui.text(this, "", 15, Ui.muted, false);
         t.setGravity(Gravity.CENTER);
         box.addView(t);
-        TextView b = Ui.pill(this, button, Ui.ACCENT, click);
-        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-2, -2);
-        blp.topMargin = dp(16);
-        box.addView(b, blp);
-        outRefs[0] = t;
-        outRefs[1] = b;
+        TextView b = Ui.button(this, button, Ui.FILLED, v -> onButton.run());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.topMargin = dp(16);
+        box.addView(b, lp);
+        refs[0] = t;
+        refs[1] = b;
         return box;
     }
 
-    // ===================================================================== keypad
+    private ListView list() {
+        ListView l = new ListView(this);
+        l.setDivider(null);
+        l.setSelector(new android.graphics.drawable.ColorDrawable(0));
+        l.setCacheColorHint(0);
+        l.setVerticalScrollBarEnabled(false);
+        l.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        l.setClipToPadding(false);
+        l.setPadding(0, 0, 0, dp(12));
+        return l;
+    }
+
+    // ==================================================================== keypad
 
     private View buildKeypad() {
-        LinearLayout v = page();
-        LayoutTransition lt = new LayoutTransition();
-        lt.enableTransitionType(LayoutTransition.CHANGING);
-        v.setLayoutTransition(lt);
+        LinearLayout p = page();
 
-        TextView gesturesPill = Ui.pill(this, "Gestures", 0x33FFFFFF, x -> showGestureManager());
-        v.addView(titleRow("Orbit Dial", gesturesPill));
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout searchPill = new LinearLayout(this);
+        searchPill.setGravity(Gravity.CENTER_VERTICAL);
+        searchPill.setMinimumHeight(dp(48));
+        searchPill.setPadding(dp(16), 0, dp(16), 0);
+        searchPill.setBackground(Ui.ripple(Ui.glassCard(this, 24, false), Ui.round(0xFFFFFFFF, dp(24))));
+        searchPill.addView(Ui.icon(this, R.drawable.ic_search, Ui.muted), new LinearLayout.LayoutParams(dp(20), dp(20)));
+        TextView hint = Ui.oneLine(Ui.text(this, "Search contacts", 15, Ui.muted, false));
+        hint.setPadding(dp(12), 0, 0, 0);
+        searchPill.addView(hint);
+        searchPill.setOnClickListener(Ui.tap(v -> {
+            showTab(CONTACTS, true);
+            search.requestFocus();
+            InputMethodManager imm = getSystemService(InputMethodManager.class);
+            if (imm != null) imm.showSoftInput(search, InputMethodManager.SHOW_IMPLICIT);
+        }));
+        Ui.press(searchPill);
+        top.addView(searchPill, new LinearLayout.LayoutParams(0, -2, 1f));
+        ImageView settings = Ui.iconButton(this, R.drawable.ic_settings, 48, 0, Ui.text, "Settings",
+                v -> startActivity(new Intent(this, SettingsActivity.class)));
+        LinearLayout.LayoutParams slp = (LinearLayout.LayoutParams) settings.getLayoutParams();
+        slp.leftMargin = dp(8);
+        top.addView(settings);
+        p.addView(top);
+
+        banner = Ui.text(this, "", 14, Ui.text, true);
+        banner.setGravity(Gravity.CENTER_VERTICAL);
+        banner.setMinHeight(dp(48));
+        banner.setPadding(dp(16), dp(10), dp(16), dp(10));
+        banner.setBackground(Ui.rippleRound(this, Ui.alpha(Ui.accent, Ui.dark ? 0x33 : 0x22), 16));
+        banner.setVisibility(View.GONE);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, -2);
+        blp.topMargin = dp(10);
+        p.addView(banner, blp);
+
+        topArea = new LinearLayout(this);
+        topArea.setOrientation(LinearLayout.VERTICAL);
+        topArea.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-1, dp(116));
+        tlp.topMargin = dp(10);
+        p.addView(topArea, tlp);
 
         LinearLayout numberRow = new LinearLayout(this);
         numberRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, -2);
-        rowLp.topMargin = dp(18);
-        v.addView(numberRow, rowLp);
-
-        numberRow.addView(new View(this), new LinearLayout.LayoutParams(dp(44), dp(44)));
-        numberView = Ui.text(this, "", 34, Color.WHITE, false);
+        addContactBtn = Ui.iconButton(this, R.drawable.ic_person_add, 48, 0, Ui.muted, "Add to contacts",
+                v -> Actions.addContact(this, number.toString()));
+        numberRow.addView(addContactBtn);
+        numberView = Ui.text(this, "", 36, Ui.text, false);
         numberView.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         numberView.setGravity(Gravity.CENTER);
         numberView.setSingleLine(true);
-        numberView.setEllipsize(TextUtils.TruncateAt.START);
+        numberView.setAutoSizeTextTypeUniformWithConfiguration(18, 36, 1, TypedValue.COMPLEX_UNIT_SP);
         numberView.setHint("Enter a number");
-        numberView.setHintTextColor(0x55FFFFFF);
-        numberView.setOnLongClickListener(x -> {
-            copy(number.toString());
+        numberView.setHintTextColor(Ui.alpha(Ui.muted, 0x99));
+        numberView.setOnLongClickListener(v -> {
+            Ui.actions(this, null,
+                    new Ui.Action(R.drawable.ic_copy, "Copy", false, () -> Actions.copy(this, number.toString())),
+                    new Ui.Action(R.drawable.ic_reply, "Paste", false, this::paste));
             return true;
         });
-        numberRow.addView(numberView, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        ImageView back = iconButton(R.drawable.ic_backspace, Ui.MUTED, 0x00000000, 44, x -> {
+        numberRow.addView(numberView, new LinearLayout.LayoutParams(0, dp(52), 1f));
+        backspace = Ui.iconButton(this, R.drawable.ic_backspace, 48, 0, Ui.text, "Delete", v -> {
             if (number.length() > 0) {
                 number.deleteCharAt(number.length() - 1);
-                x.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                 refreshKeypad();
             }
         });
-        back.setOnLongClickListener(x -> {
+        backspace.setOnLongClickListener(v -> {
             number.setLength(0);
-            x.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            Ui.tick(v);
             refreshKeypad();
             return true;
         });
-        numberRow.addView(back);
+        numberRow.addView(backspace);
+        p.addView(numberRow, new LinearLayout.LayoutParams(-1, -2));
 
-        matchView = Ui.text(this, "", 14, Ui.CYAN, true);
+        matchView = Ui.oneLine(Ui.text(this, "", 14, Ui.accent, true));
         matchView.setGravity(Gravity.CENTER);
-        v.addView(matchView);
-
-        hintView = Ui.text(this, "", 12, Ui.MUTED, false);
-        hintView.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-1, -2);
-        hlp.topMargin = dp(2);
-        v.addView(hintView, hlp);
-
-        suggestBox = new LinearLayout(this);
-        suggestBox.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
-        slp.topMargin = dp(8);
-        v.addView(suggestBox, slp);
-
-        keypadActions = new LinearLayout(this);
-        keypadActions.setGravity(Gravity.CENTER);
-        addContactPill = Ui.pill(this, "+ Add contact", 0x33FFFFFF, x -> addContact(number.toString()));
-        TextView smsPill = Ui.pill(this, "Message", 0x33FFFFFF, x -> sms(number.toString()));
-        keypadActions.addView(addContactPill);
-        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-2, -2);
-        mlp.leftMargin = dp(10);
-        keypadActions.addView(smsPill, mlp);
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(-1, -2);
-        alp.topMargin = dp(8);
-        v.addView(keypadActions, alp);
+        matchView.setMinHeight(dp(20));
+        p.addView(matchView, new LinearLayout.LayoutParams(-1, -2));
 
         dial = new OrbitDialView(this);
-        dial.setColors(Ui.ACCENT, Ui.GREEN);
+        dial.setStyle(Prefs.DIAL_GRID.equals(Prefs.dial(this)) ? OrbitDialView.GRID : OrbitDialView.ORBIT);
         dial.setListener(this);
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(-1, 0, 1f);
-        dlp.topMargin = dp(6);
-        v.addView(dial, dlp);
-        return v;
+        dlp.topMargin = dp(4);
+        p.addView(dial, dlp);
+
+        LinearLayout bottom = new LinearLayout(this);
+        bottom.setGravity(Gravity.CENTER);
+        messageBtn = Ui.iconButton(this, R.drawable.ic_message, 56, Ui.glass, Ui.text, "Send a message",
+                v -> Actions.sms(this, number.toString()));
+        callBtn = Ui.iconButton(this, R.drawable.ic_call, 68, Ui.accent, Ui.onAccent, "Call", v -> onCallPressed());
+        whatsAppBtn = Ui.iconButton(this, R.drawable.ic_chat, 56, Ui.glass, Ui.text, "Open in WhatsApp",
+                v -> Actions.whatsAppChat(this, number.toString()));
+        bottom.addView(messageBtn);
+        LinearLayout.LayoutParams mid = (LinearLayout.LayoutParams) callBtn.getLayoutParams();
+        mid.leftMargin = dp(32);
+        mid.rightMargin = dp(32);
+        bottom.addView(callBtn);
+        bottom.addView(whatsAppBtn);
+        if (dial.hasCallButton()) callBtn.setVisibility(View.INVISIBLE);
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-1, dp(72));
+        bl.bottomMargin = dp(2);
+        p.addView(bottom, bl);
+        return p;
+    }
+
+    private void paste() {
+        android.content.ClipboardManager cm = getSystemService(android.content.ClipboardManager.class);
+        if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip().getItemCount() == 0) {
+            snack("There's nothing to paste.");
+            return;
+        }
+        CharSequence t = cm.getPrimaryClip().getItemAt(0).coerceToText(this);
+        String n = t == null ? "" : t.toString().replaceAll("[^0-9+*#]", "");
+        if (n.isEmpty()) {
+            snack("The copied text doesn't contain a phone number.");
+            return;
+        }
+        number.setLength(0);
+        number.append(n);
+        refreshKeypad();
+    }
+
+    private String format(String raw) {
+        if (raw.isEmpty() || raw.contains("*") || raw.contains("#")) return raw;
+        String f = PhoneNumberUtils.formatNumber(raw, country);
+        return f != null ? f : raw;
     }
 
     private void refreshKeypad() {
         if (numberView == null) return;
         String n = number.toString();
         numberView.setText(format(n));
-        Data.Contact exact = n.length() >= 3 ? Data.findByNumber(contacts, n) : null;
+        Data.Contact exact = n.length() >= 3 ? Data.find(n) : null;
         matchView.setText(exact != null ? exact.name : "");
-        matchView.setVisibility(exact != null ? View.VISIBLE : View.GONE);
-        dial.setReady(n.length() > 0);
-        bg.setMood(n.isEmpty() ? Ui.ACCENT : 0xFF16A34A);
+        dial.setReady(!n.isEmpty());
+        boolean hasNumber = !n.isEmpty();
+        boolean dialable = hasNumber && !n.contains("*") && !n.contains("#") && n.replace("+", "").length() >= 3;
+        backspace.setVisibility(hasNumber ? View.VISIBLE : View.INVISIBLE);
+        messageBtn.setVisibility(dialable ? View.VISIBLE : View.INVISIBLE);
+        whatsAppBtn.setVisibility(dialable && Phonebook.whatsAppPackage(this) != null ? View.VISIBLE : View.INVISIBLE);
+        addContactBtn.setVisibility(dialable && exact == null ? View.VISIBLE : View.INVISIBLE);
 
-        suggestBox.removeAllViews();
-        if (exact == null && n.length() >= 2) {
-            for (Data.Match m : Data.search(contacts, n, 2)) suggestBox.addView(suggestionRow(m));
-        }
-        keypadActions.setVisibility(n.isEmpty() ? View.GONE : View.VISIBLE);
-        addContactPill.setVisibility(exact == null && !n.contains("*") && !n.contains("#") ? View.VISIBLE : View.GONE);
-
-        if (assignContact != null) {
-            hintView.setText("Draw a path across 3+ keys for " + assignContact.name);
-            hintView.setTextColor(Ui.CYAN);
-        } else if (n.isEmpty()) {
-            int count = gestures.all().size();
-            hintView.setText(count == 0 ? "Tip: drag across 3+ keys to create a Gesture Speed Dial"
-                    : count + (count == 1 ? " gesture ready" : " gestures ready") + " · type to search contacts");
-            hintView.setTextColor(Ui.MUTED);
+        // Banner for special modes.
+        if (assignNumber != null) {
+            banner.setText("Draw a path across 3 or more keys for " + (assignName != null ? assignName : assignNumber) + ".  Tap to cancel.");
+            banner.setOnClickListener(Ui.tap(v -> {
+                assignNumber = null;
+                refreshKeypad();
+            }));
+            banner.setVisibility(View.VISIBLE);
+        } else if (addCallMode) {
+            banner.setText("Adding someone to your call. Tap to go back to the call.");
+            banner.setOnClickListener(Ui.tap(v -> {
+                addCallMode = false;
+                startActivity(new Intent(this, InCallActivity.class));
+                refreshKeypad();
+            }));
+            banner.setVisibility(View.VISIBLE);
+        } else if (CallManager.hasCalls()) {
+            banner.setText("Call in progress. Tap to return to it.");
+            banner.setOnClickListener(Ui.tap(v -> startActivity(new Intent(this, InCallActivity.class))));
+            banner.setVisibility(View.VISIBLE);
         } else {
-            hintView.setText("");
+            banner.setVisibility(View.GONE);
         }
-        hintView.setVisibility(hintView.getText().length() == 0 ? View.GONE : View.VISIBLE);
+
+        // Favourites when idle, matching contacts while typing.
+        topArea.removeAllViews();
+        if (!hasNumber) {
+            List<Data.Contact> favs = new ArrayList<>();
+            for (Data.Contact c : Data.contacts) if (c.starred && !c.numbers.isEmpty()) favs.add(c);
+            if (!favs.isEmpty()) {
+                HorizontalScrollView hs = new HorizontalScrollView(this);
+                hs.setHorizontalScrollBarEnabled(false);
+                LinearLayout row = new LinearLayout(this);
+                for (Data.Contact c : favs) row.addView(favourite(c, 56));
+                hs.addView(row);
+                topArea.addView(hs);
+            } else {
+                int count = gestures.all().size();
+                TextView t = Ui.text(this, count > 0
+                        ? count + (count == 1 ? " gesture ready. " : " gestures ready. ") + "Draw a path across the keys to call."
+                        : "Tip: drag your finger across 3 or more keys to create a Gesture Speed Dial.", 13, Ui.muted, false);
+                t.setGravity(Gravity.CENTER);
+                t.setPadding(dp(16), 0, dp(16), 0);
+                topArea.addView(t);
+            }
+        } else if (exact == null) {
+            for (Data.Match m : Data.search(n, true, 2)) topArea.addView(suggestion(m, n));
+        }
+
     }
 
-    private View suggestionRow(Data.Match m) {
+    private View favourite(Data.Contact c, int size) {
+        LinearLayout item = new LinearLayout(this);
+        item.setOrientation(LinearLayout.VERTICAL);
+        item.setGravity(Gravity.CENTER_HORIZONTAL);
+        item.setPadding(dp(4), dp(4), dp(4), dp(4));
+        AvatarView av = new AvatarView(this);
+        av.set(c.name, c.lookupKey);
+        Data.bindPhoto(this, av, c.thumbUri);
+        item.addView(av, new LinearLayout.LayoutParams(dp(size), dp(size)));
+        TextView n = Ui.oneLine(Ui.text(this, c.name.split("\\s+")[0], 12, Ui.text, false));
+        n.setGravity(Gravity.CENTER);
+        n.setPadding(0, dp(6), 0, 0);
+        item.addView(n, new LinearLayout.LayoutParams(dp(size + 16), -2));
+        item.setContentDescription("Call " + c.name);
+        item.setOnClickListener(Ui.tap(v -> {
+            if (pickPattern != null) onContactPicked(c);
+            else Actions.call(this, c.primary());
+        }));
+        item.setOnLongClickListener(v -> {
+            Actions.openContact(this, c.id, c.primary());
+            return true;
+        });
+        item.setBackground(Ui.rippleRound(this, 0, 16));
+        Ui.press(item);
+        return item;
+    }
+
+    private View suggestion(Data.Match m, String typed) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(10), dp(8), dp(8), dp(8));
-        row.setBackground(Ui.rippleBg(0x26FFFFFF, dp(16)));
+        row.setMinimumHeight(dp(52));
+        row.setPadding(dp(10), dp(2), dp(2), dp(2));
+        row.setBackground(Ui.ripple(Ui.glassCard(this, 18, false), Ui.round(0xFFFFFFFF, dp(18))));
+        AvatarView av = new AvatarView(this);
+        av.set(m.contact.name, m.contact.lookupKey);
+        Data.bindPhoto(this, av, m.contact.thumbUri);
+        row.addView(av, new LinearLayout.LayoutParams(dp(38), dp(38)));
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        texts.setPadding(dp(12), 0, dp(8), 0);
+        texts.addView(Ui.oneLine(Ui.text(this, m.contact.name, 15, Ui.text, true)));
+        TextView sub = Ui.oneLine(Ui.text(this, highlight(m.number.number, typed), 13, Ui.muted, false));
+        sub.setPadding(0, dp(3), 0, 0);
+        texts.addView(sub);
+        row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(Ui.iconButton(this, R.drawable.ic_call, 48, 0, Ui.accent, "Call " + m.contact.name,
+                v -> Actions.call(this, m.number.number)));
+        row.setOnClickListener(Ui.tap(v -> {
+            number.setLength(0);
+            number.append(m.number.number.replaceAll("[^0-9+*#]", ""));
+            refreshKeypad();
+        }));
+        Ui.press(row);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.bottomMargin = dp(6);
         row.setLayoutParams(lp);
-
-        AvatarView av = new AvatarView(this);
-        av.set(m.contact.name, m.contact.lookupKey);
-        Data.bindPhoto(this, av, m.contact.photoUri);
-        row.addView(av, new LinearLayout.LayoutParams(dp(34), dp(34)));
-
-        LinearLayout texts = new LinearLayout(this);
-        texts.setOrientation(LinearLayout.VERTICAL);
-        texts.setPadding(dp(12), 0, 0, 0);
-        texts.addView(Ui.text(this, m.contact.name, 15, Color.WHITE, true));
-        String sub = (m.phone.label.isEmpty() ? "" : m.phone.label + " · ") + m.phone.number
-                + (m.byName ? "  · name match" : "");
-        texts.addView(Ui.text(this, sub, 12, Ui.MUTED, false));
-        row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        row.addView(iconButton(R.drawable.ic_call, Color.WHITE, Ui.GREEN, 36,
-                x -> placeCall(m.phone.number, m.contact.name)));
-        row.setOnClickListener(x -> {
-            number.setLength(0);
-            number.append(Data.digits(m.phone.number).isEmpty() ? m.phone.number : m.phone.number.replaceAll("[^0-9+*#]", ""));
-            refreshKeypad();
-        });
         return row;
+    }
+
+    /** Colours the typed digits inside a number. */
+    private CharSequence highlight(String full, String typed) {
+        String d = Data.digits(typed);
+        SpannableString s = new SpannableString(full);
+        if (d.length() < 2) return s;
+        StringBuilder only = new StringBuilder();
+        List<Integer> map = new ArrayList<>();
+        for (int i = 0; i < full.length(); i++) {
+            if (Character.isDigit(full.charAt(i))) {
+                only.append(full.charAt(i));
+                map.add(i);
+            }
+        }
+        int at = only.indexOf(d);
+        if (at >= 0) {
+            s.setSpan(new ForegroundColorSpan(Ui.accent), map.get(at), map.get(at + d.length() - 1) + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return s;
     }
 
     @Override
     public void onDigit(char key) {
-        if (number.length() >= 30) return;
+        if (number.length() >= 40) return;
         number.append(key);
         playTone(key);
         refreshKeypad();
@@ -593,138 +687,69 @@ public class MainActivity extends Activity implements OrbitDialView.Listener {
             number.append('+');
             refreshKeypad();
         } else if (key == '1' && number.length() == 0) {
-            toast("Voicemail: set it up in your carrier's dialer");
+            Actions.voicemail(this);
         }
     }
 
     @Override
     public void onCallPressed() {
         if (number.length() == 0) {
-            if (!calls.isEmpty()) {
-                number.append(calls.get(0).number);
-                refreshKeypad();
-                toast("Last number · tap CALL again");
-            } else {
-                toast("Type a number first");
+            for (Data.Call c : Data.calls) {
+                if (c.outgoing() && !c.number.isEmpty()) {
+                    number.append(c.number.replaceAll("[^0-9+*#]", ""));
+                    refreshKeypad();
+                    snack("Last number dialled. Tap call again.");
+                    return;
+                }
             }
+            snack("Type a number first.");
             return;
         }
-        placeCall(number.toString(), null);
+        String n = number.toString();
+        if (addCallMode) {
+            addCallMode = false;
+            number.setLength(0);
+            refreshKeypad();
+        }
+        Actions.call(this, n);
     }
 
     @Override
     public void onGesture(String pattern) {
-        if (assignContact != null) {
-            gestures.put(pattern, assignContact.name, assignPhone.number);
-            toast(Stores.prettify(pattern) + " now calls " + assignContact.name);
-            assignContact = null;
-            assignPhone = null;
+        if (assignNumber != null) {
+            gestures.put(pattern, assignName != null ? assignName : format(assignNumber), assignNumber);
+            snack("Saved. Drawing " + Stores.prettify(pattern) + " now calls " + (assignName != null ? assignName : assignNumber) + ".");
+            assignNumber = null;
+            assignName = null;
             refreshKeypad();
             return;
         }
         Stores.Gesture g = gestures.get(pattern);
         if (g != null) {
-            number.setLength(0);
-            number.append(g.number);
-            refreshKeypad();
-            toast("Gesture " + g.prettyPattern() + " → " + g.name);
-            placeCall(g.number, g.name);
+            snack("Calling " + g.name);
+            Actions.call(this, g.number);
             return;
         }
-        List<String> options = new ArrayList<>();
-        options.add("Choose a contact");
-        if (number.length() > 0) options.add("Use " + format(number.toString()));
-        options.add("Type a number");
-        new AlertDialog.Builder(this)
-                .setTitle("New gesture  " + Stores.prettify(pattern))
-                .setItems(options.toArray(new String[0]), (d, which) -> {
-                    String choice = options.get(which);
-                    if (choice.startsWith("Choose")) {
-                        startPick(pattern);
-                    } else if (choice.startsWith("Use")) {
-                        String n = number.toString();
-                        Data.Contact ct = Data.findByNumber(contacts, n);
-                        gestures.put(pattern, ct != null ? ct.name : format(n), n);
-                        toast("Saved " + Stores.prettify(pattern));
-                        refreshKeypad();
-                    } else {
-                        typeNumberForGesture(pattern);
-                    }
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
-
-    private void typeNumberForGesture(String pattern) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(24), dp(8), dp(24), 0);
-        EditText name = new EditText(this);
-        name.setHint("Name");
-        name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
-        box.addView(name);
-        EditText num = new EditText(this);
-        num.setHint("Phone number");
-        num.setInputType(InputType.TYPE_CLASS_PHONE);
-        box.addView(num);
-        new AlertDialog.Builder(this)
-                .setTitle("Gesture  " + Stores.prettify(pattern))
-                .setView(box)
-                .setPositiveButton("Save", (d, w) -> {
-                    String n = num.getText().toString().replaceAll("[^0-9+*#]", "");
-                    if (n.isEmpty()) {
-                        toast("Not saved: the number was empty");
-                        return;
-                    }
-                    String label = name.getText().toString().trim();
-                    gestures.put(pattern, label.isEmpty() ? format(n) : label, n);
-                    toast("Saved " + Stores.prettify(pattern));
-                    refreshKeypad();
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
-
-    private void showGestureManager() {
-        List<Stores.Gesture> list = gestures.all();
-        if (list.isEmpty()) {
-            new AlertDialog.Builder(this)
-                    .setTitle("Gesture Speed Dial")
-                    .setMessage("Drag your finger across three or more keys on the dial without lifting it, "
-                            + "for example 1 → 5 → 9. When you let go, link that path to a contact.\n\n"
-                            + "From then on, drawing the path calls them instantly. You can also open any "
-                            + "contact and tap \"Assign gesture\".")
-                    .setPositiveButton("Got it", null)
-                    .show();
-            return;
+        String typed = number.toString();
+        List<Ui.Action> acts = new ArrayList<>();
+        acts.add(new Ui.Action(R.drawable.ic_person, "Choose a contact", false, () -> startPick(pattern)));
+        if (typed.replace("+", "").length() >= 3) {
+            acts.add(new Ui.Action(R.drawable.ic_call, "Use " + format(typed), false, () -> {
+                Data.Contact c = Data.find(typed);
+                gestures.put(pattern, c != null ? c.name : format(typed), typed);
+                snack("Saved gesture " + Stores.prettify(pattern) + ".");
+                refreshKeypad();
+            }));
         }
-        String[] items = new String[list.size()];
-        for (int i = 0; i < list.size(); i++) {
-            Stores.Gesture g = list.get(i);
-            items[i] = g.prettyPattern() + "    " + g.name;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("Your gestures")
-                .setItems(items, (d, which) -> {
-                    Stores.Gesture g = list.get(which);
-                    new AlertDialog.Builder(this)
-                            .setTitle(g.prettyPattern() + "  →  " + g.name)
-                            .setMessage(format(g.number))
-                            .setPositiveButton("Call", (d2, w) -> placeCall(g.number, g.name))
-                            .setNeutralButton("Delete", (d2, w) -> {
-                                gestures.remove(g.pattern);
-                                toast("Deleted");
-                                refreshKeypad();
-                            })
-                            .setNegativeButton("Close", null)
-                            .show();
-                })
-                .setNegativeButton("Close", null)
-                .show();
+        Ui.actions(this, "New gesture  " + Stores.prettify(pattern), acts.toArray(new Ui.Action[0]));
     }
 
     private void playTone(char key) {
         if (tones == null) return;
+        try {
+            if (Settings.System.getInt(getContentResolver(), Settings.System.DTMF_TONE_WHEN_DIALING, 1) == 0) return;
+        } catch (RuntimeException ignored) {
+        }
         int tone;
         switch (key) {
             case '0': tone = ToneGenerator.TONE_DTMF_0; break;
@@ -741,114 +766,194 @@ public class MainActivity extends Activity implements OrbitDialView.Listener {
             case '#': tone = ToneGenerator.TONE_DTMF_P; break;
             default: return;
         }
-        tones.startTone(tone, 110);
+        tones.startTone(tone, 100);
     }
 
-    // ==================================================================== recents
+    private void startPick(String pattern) {
+        pickPattern = pattern;
+        pickBanner.setText("Tap the person " + Stores.prettify(pattern) + " should call.  Tap here to cancel.");
+        pickBanner.setVisibility(View.VISIBLE);
+        showTab(CONTACTS, true);
+    }
+
+    private void cancelPick() {
+        pickPattern = null;
+        pickBanner.setVisibility(View.GONE);
+    }
+
+    private void onContactPicked(Data.Contact c) {
+        String pattern = pickPattern;
+        cancelPick();
+        if (c.numbers.size() == 1) {
+            savePicked(pattern, c, c.numbers.get(0));
+            return;
+        }
+        List<Ui.Action> acts = new ArrayList<>();
+        for (Data.Number n : c.numbers) {
+            acts.add(new Ui.Action(R.drawable.ic_call, n.number + (n.label.isEmpty() ? "" : "  " + n.label), false,
+                    () -> savePicked(pattern, c, n)));
+        }
+        Ui.actions(this, c.name, acts.toArray(new Ui.Action[0]));
+    }
+
+    private void savePicked(String pattern, Data.Contact c, Data.Number n) {
+        gestures.put(pattern, c.name, n.number);
+        showTab(KEYPAD, true);
+        refreshKeypad();
+        snack("Saved. Drawing " + Stores.prettify(pattern) + " now calls " + c.name + ".");
+    }
+
+    // =================================================================== recents
 
     private View buildRecents() {
-        LinearLayout v = page();
-        v.addView(titleRow("Recents", null));
+        LinearLayout p = page();
+        p.addView(header("Recents"));
 
-        // Insights card: today's activity at a glance.
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(16), dp(14), dp(16), dp(14));
-        card.setBackground(Ui.round(0x33222B4D, dp(20)));
-        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(-1, -2);
-        clp.topMargin = dp(14);
-        v.addView(card, clp);
-        LinearLayout stats = new LinearLayout(this);
-        card.addView(stats);
-        statToday = stat(stats, "Calls today", Color.WHITE);
-        statTalk = stat(stats, "Talk time", Ui.CYAN);
-        statMissed = stat(stats, "Missed", Ui.RED);
-        statTop = Ui.text(this, "", 12, Ui.MUTED, false);
-        statTop.setPadding(0, dp(10), 0, 0);
-        card.addView(statTop);
-
-        LinearLayout chips = new LinearLayout(this);
-        LinearLayout.LayoutParams chlp = new LinearLayout.LayoutParams(-1, -2);
-        chlp.topMargin = dp(12);
-        chlp.bottomMargin = dp(4);
-        v.addView(chips, chlp);
-        chipAll = Ui.pill(this, "All", Ui.ACCENT, x -> {
-            missedOnly = false;
-            refreshRecents(true);
-        });
-        chipMissed = Ui.pill(this, "Missed", 0x33FFFFFF, x -> {
-            missedOnly = true;
-            refreshRecents(true);
-        });
-        chips.addView(chipAll);
-        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-2, -2);
-        mlp.leftMargin = dp(8);
-        chips.addView(chipMissed, mlp);
+        HorizontalScrollView hs = new HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(this);
+        String[] names = {"All", "Missed", "Incoming", "Outgoing"};
+        for (int i = 0; i < 4; i++) {
+            final int idx = i;
+            TextView c = Ui.text(this, names[i], 14, Ui.text, true);
+            c.setGravity(Gravity.CENTER);
+            c.setMinHeight(dp(40));
+            c.setPadding(dp(16), 0, dp(16), 0);
+            c.setOnClickListener(Ui.tap(v -> {
+                filter = idx;
+                refreshRecents();
+                recentList.setSelection(0);
+            }));
+            Ui.press(c);
+            filterChips[i] = c;
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(40));
+            lp.rightMargin = dp(8);
+            row.addView(c, lp);
+        }
+        hs.addView(row);
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-1, -2);
+        hlp.bottomMargin = dp(6);
+        p.addView(hs, hlp);
 
         FrameLayout frame = new FrameLayout(this);
-        v.addView(frame, new LinearLayout.LayoutParams(-1, 0, 1f));
-        recentsList = makeList();
-        recentsList.setAdapter(recentsAdapter);
-        frame.addView(recentsList, new FrameLayout.LayoutParams(-1, -1));
+        p.addView(frame, new LinearLayout.LayoutParams(-1, 0, 1f));
+        recentList = list();
+        insights = buildInsights();
+        recentList.addHeaderView(insights, null, false);
+        recentList.setAdapter(recents);
+        frame.addView(recentList, new FrameLayout.LayoutParams(-1, -1));
         TextView[] refs = new TextView[2];
-        recentsEmpty = emptyState("", "Allow access", x -> requestOrOpenSettings(Manifest.permission.READ_CALL_LOG), refs);
-        recentsEmptyText = refs[0];
-        recentsEmptyBtn = refs[1];
-        frame.addView(recentsEmpty, new FrameLayout.LayoutParams(-1, -1));
+        recentEmpty = emptyState("Allow access", () -> requestOrSettings(Manifest.permission.READ_CALL_LOG), refs);
+        recentEmptyText = refs[0];
+        recentEmptyButton = refs[1];
+        frame.addView(recentEmpty, new FrameLayout.LayoutParams(-1, -1));
+        return p;
+    }
+
+    private LinearLayout buildInsights() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(Ui.glassCard(this, 20, false));
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout stats = new LinearLayout(this);
+        statToday = stat(stats, "Calls today");
+        statTalk = stat(stats, "Talk time");
+        statMissed = stat(stats, "Missed");
+        card.addView(stats);
+        statTop = Ui.text(this, "", 13, Ui.muted, false);
+        statTop.setPadding(0, dp(10), 0, 0);
+        card.addView(statTop);
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setPadding(0, dp(2), 0, dp(6));
+        wrap.addView(card, new LinearLayout.LayoutParams(-1, -2));
+        return wrap;
+    }
+
+    private TextView stat(LinearLayout parent, String label) {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView v = Ui.oneLine(Ui.text(this, "0", 22, Ui.text, true));
+        col.addView(v);
+        TextView l = Ui.oneLine(Ui.text(this, label, 12, Ui.muted, false));
+        l.setPadding(0, dp(4), 0, 0);
+        col.addView(l);
+        parent.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
         return v;
     }
 
-    private TextView stat(LinearLayout parent, String label, int color) {
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        TextView value = Ui.text(this, "–", 22, color, true);
-        col.addView(value);
-        col.addView(Ui.text(this, label, 12, Ui.MUTED, false));
-        parent.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
-        return value;
+    private void requestOrSettings(String perm) {
+        String key = "asked_" + perm;
+        if (!Prefs.sp(this).getBoolean(key, false) || shouldShowRequestPermissionRationale(perm)) {
+            Prefs.sp(this).edit().putBoolean(key, true).apply();
+            requestPermissions(new String[]{perm}, 9001);
+        } else {
+            Actions.openAppSettings(this);
+        }
     }
 
-    private ListView makeList() {
-        ListView l = new ListView(this);
-        l.setDivider(null);
-        l.setSelector(new ColorDrawable(Color.TRANSPARENT));
-        l.setCacheColorHint(Color.TRANSPARENT);
-        l.setVerticalScrollBarEnabled(false);
-        l.setClipToPadding(false);
-        l.setPadding(0, dp(4), 0, dp(12));
-        l.setLayoutAnimation(listAnimation());
-        return l;
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        if (code == 9001) watch();
     }
 
-    private void refreshRecents(boolean animate) {
-        if (recentsList == null) return;
-        boolean allowed = has(Manifest.permission.READ_CALL_LOG);
-        chipAll.setBackground(Ui.rippleBg(missedOnly ? 0x33FFFFFF : Ui.ACCENT, dp(20)));
-        chipMissed.setBackground(Ui.rippleBg(missedOnly ? Ui.RED : 0x33FFFFFF, dp(20)));
+    /** A list entry: either a day heading or a group of consecutive calls with one number. */
+    private static final class Entry {
+        final String day;
+        final Data.Call call;
+        final List<Long> ids = new ArrayList<>();
+        int count = 1;
 
-        // Group consecutive calls with the same number, like other dialers do.
-        List<RecentRow> rows = new ArrayList<>();
-        for (Data.Call c : calls) {
-            if (missedOnly && !c.missed()) continue;
-            RecentRow last = rows.isEmpty() ? null : rows.get(rows.size() - 1);
-            if (last != null && Data.sameNumber(last.call.number, c.number) && last.call.missed() == c.missed()) {
+        Entry(String day, Data.Call call) {
+            this.day = day;
+            this.call = call;
+        }
+    }
+
+    private void refreshRecents() {
+        if (recentList == null) return;
+        boolean allowed = Actions.has(this, Manifest.permission.READ_CALL_LOG);
+        for (int i = 0; i < 4; i++) {
+            boolean on = i == filter;
+            filterChips[i].setBackground(Ui.rippleRound(this, on ? Ui.accent : Ui.glassStrong, 20));
+            filterChips[i].setTextColor(on ? Ui.onAccent : Ui.text);
+        }
+        List<Entry> out = new ArrayList<>();
+        String lastDay = null;
+        Entry last = null;
+        for (Data.Call c : Data.calls) {
+            if (filter == 1 && !c.missed()) continue;
+            if (filter == 2 && (c.missed() || c.outgoing())) continue;
+            if (filter == 3 && !c.outgoing()) continue;
+            String day = Ui.dayLabel(c.date);
+            if (!day.equals(lastDay)) {
+                out.add(new Entry(day, null));
+                lastDay = day;
+                last = null;
+            }
+            if (last != null && Data.sameNumber(last.call.number, c.number) && last.call.missed() == c.missed()
+                    && last.call.outgoing() == c.outgoing()) {
                 last.count++;
+                last.ids.add(c.id);
             } else {
-                rows.add(new RecentRow(c));
+                last = new Entry(null, c);
+                last.ids.add(c.id);
+                out.add(last);
             }
         }
-        recentsAdapter.rows = rows;
-        recentsAdapter.notifyDataSetChanged();
-        if (animate) recentsList.scheduleLayoutAnimation();
-
+        recents.items = out;
+        recents.notesCache.clear();
+        recents.notifyDataSetChanged();
+        insights.setVisibility(filter == 0 && !Data.calls.isEmpty() ? View.VISIBLE : View.GONE);
+        insights.getChildAt(0).setVisibility(filter == 0 && !Data.calls.isEmpty() ? View.VISIBLE : View.GONE);
         if (!allowed) {
-            recentsEmptyText.setText("Orbit Dial needs permission to show your call history.");
-            recentsEmptyBtn.setVisibility(View.VISIBLE);
+            recentEmptyText.setText("Orbit Dial needs access to your call history to show it here.");
+            recentEmptyButton.setVisibility(View.VISIBLE);
         } else {
-            recentsEmptyText.setText(missedOnly ? "No missed calls. Nice." : "No calls yet.");
-            recentsEmptyBtn.setVisibility(View.GONE);
+            recentEmptyText.setText(filter == 1 ? "No missed calls." : "No calls yet.");
+            recentEmptyButton.setVisibility(View.GONE);
         }
-        recentsEmpty.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
+        recentEmpty.setVisibility(out.isEmpty() && (Data.loaded || !allowed) ? View.VISIBLE : View.GONE);
         updateStats();
         updateBadge();
     }
@@ -858,654 +963,388 @@ public class MainActivity extends Activity implements OrbitDialView.Listener {
         cal.set(Calendar.HOUR_OF_DAY, 0);
         cal.set(Calendar.MINUTE, 0);
         cal.set(Calendar.SECOND, 0);
-        cal.set(Calendar.MILLISECOND, 0);
-        long dayStart = cal.getTimeInMillis();
-        long weekStart = dayStart - 6L * 24 * 3600 * 1000;
+        long dayStart = cal.getTimeInMillis(), weekStart = dayStart - 6L * 86400000L;
         int today = 0, missed = 0;
         long talk = 0;
         Map<String, Integer> freq = new HashMap<>();
         Map<String, String> names = new HashMap<>();
-        for (Data.Call c : calls) {
+        for (Data.Call c : Data.calls) {
             if (c.date >= dayStart) {
                 today++;
                 talk += c.duration;
                 if (c.missed()) missed++;
             }
             if (c.date >= weekStart && !c.missed() && !c.number.isEmpty()) {
-                String d = Data.digits(c.number);
-                String key = d.length() > 9 ? d.substring(d.length() - 9) : d;
-                freq.put(key, freq.getOrDefault(key, 0) + 1);
-                names.put(key, c.title());
+                String k = Data.key(c.number);
+                freq.put(k, freq.getOrDefault(k, 0) + 1);
+                String nm = Data.nameFor(c.number);
+                names.put(k, nm != null ? nm : c.cachedName != null && !c.cachedName.isEmpty() ? c.cachedName : c.number);
             }
         }
         statToday.setText(String.valueOf(today));
-        statTalk.setText(talk == 0 ? "0m" : Ui.duration(talk));
+        long m = talk / 60;
+        statTalk.setText(talk == 0 ? "0 min" : m < 60 ? Math.max(1, m) + " min" : (m / 60) + " hr " + (m % 60) + " min");
         statMissed.setText(String.valueOf(missed));
-        String topKey = null;
+        statMissed.setTextColor(missed > 0 ? Ui.danger : Ui.text);
+        String top = null;
         int best = 0;
-        for (Map.Entry<String, Integer> e : freq.entrySet()) {
-            if (e.getValue() > best) {
-                best = e.getValue();
-                topKey = e.getKey();
-            }
-        }
-        statTop.setText(topKey == null ? "Your call insights appear here."
-                : "Most talked to this week: " + names.get(topKey) + " (" + best + (best == 1 ? " call)" : " calls)"));
+        for (Map.Entry<String, Integer> e : freq.entrySet()) if (e.getValue() > best) { best = e.getValue(); top = e.getKey(); }
+        statTop.setText(top == null ? "Your call activity for the week shows here."
+                : "Most talked to this week: " + names.get(top) + ", " + best + (best == 1 ? " call" : " calls"));
     }
 
     private void updateBadge() {
-        long seen = prefs.getLong("recents_seen", 0);
+        if (missedBadge == null) return;
+        long seen = Prefs.sp(this).getLong("recents_seen", 0);
         int n = 0;
-        for (Data.Call c : calls) {
+        for (Data.Call c : Data.calls) {
             if (c.date <= seen) break;
             if (c.missed()) n++;
         }
-        recentsBadge.setText(n > 9 ? "9+" : String.valueOf(n));
-        recentsBadge.setVisibility(n > 0 && tab != TAB_RECENTS ? View.VISIBLE : View.GONE);
-    }
-
-    private static final class RecentRow {
-        final Data.Call call;
-        int count = 1;
-
-        RecentRow(Data.Call call) {
-            this.call = call;
-        }
+        missedBadge.setText(n > 9 ? "9+" : String.valueOf(n));
+        missedBadge.setVisibility(n > 0 && tab != RECENTS ? View.VISIBLE : View.GONE);
     }
 
     private final class RecentsAdapter extends BaseAdapter {
-        List<RecentRow> rows = new ArrayList<>();
+        List<Entry> items = new ArrayList<>();
+        final Map<String, List<Notes.Item>> notesCache = new HashMap<>();
 
-        @Override
-        public int getCount() {
-            return rows.size();
-        }
-
-        @Override
-        public Object getItem(int i) {
-            return rows.get(i);
-        }
-
-        @Override
-        public long getItemId(int i) {
-            return i;
-        }
+        @Override public int getCount() { return items.size(); }
+        @Override public Object getItem(int i) { return items.get(i); }
+        @Override public long getItemId(int i) { return i; }
+        @Override public int getViewTypeCount() { return 2; }
+        @Override public int getItemViewType(int i) { return items.get(i).day != null ? 0 : 1; }
+        @Override public boolean isEnabled(int i) { return items.get(i).day == null; }
 
         @Override
         public View getView(int pos, View convert, ViewGroup parent) {
-            RowHolder h;
-            if (convert == null) {
-                h = new RowHolder(true);
-                convert = h.root;
-            } else {
-                h = (RowHolder) convert.getTag();
+            Entry e = items.get(pos);
+            if (e.day != null) {
+                TextView t = convert instanceof TextView ? (TextView) convert : Ui.section(MainActivity.this, "");
+                t.setText(e.day);
+                return t;
             }
-            RecentRow r = rows.get(pos);
-            Data.Call c = r.call;
-            Data.Contact ct = Data.findByNumber(contacts, c.number);
-            String title = ct != null ? ct.name : c.title();
-            h.avatar.set(title, ct != null ? ct.lookupKey : c.number);
-            Data.bindPhoto(MainActivity.this, h.avatar, ct != null ? ct.photoUri : null);
-            h.title.setText(r.count > 1 ? title + "  (" + r.count + ")" : title);
-            h.title.setTextColor(c.missed() ? Ui.RED : Color.WHITE);
-
-            int icon, tint;
-            if (c.missed()) {
-                icon = R.drawable.ic_call_missed;
-                tint = Ui.RED;
-            } else if (c.type == android.provider.CallLog.Calls.OUTGOING_TYPE) {
-                icon = R.drawable.ic_call_out;
-                tint = Ui.BLUE;
-            } else {
-                icon = R.drawable.ic_call_in;
-                tint = Ui.GREEN;
-            }
-            h.typeIcon.setImageResource(icon);
-            h.typeIcon.setImageTintList(ColorStateList.valueOf(tint));
-            h.typeIcon.setVisibility(View.VISIBLE);
+            Row r = convert != null && convert.getTag() instanceof Row ? (Row) convert.getTag() : new Row();
+            Data.Call c = e.call;
+            Data.Contact ct = Data.find(c.number);
+            String title = ct != null ? ct.name : !TextUtils.isEmpty(c.cachedName) ? c.cachedName
+                    : c.number.isEmpty() ? "Private number" : format(c.number);
+            r.avatar.set(ct != null ? ct.name : null, ct != null ? ct.lookupKey : c.number);
+            Data.bindPhoto(MainActivity.this, r.avatar, ct != null ? ct.thumbUri : null);
+            r.title.setText(e.count > 1 ? title + "  (" + e.count + ")" : title);
+            r.title.setTextColor(c.missed() ? Ui.danger : Ui.text);
+            int icon = c.missed() ? R.drawable.ic_call_missed : c.outgoing() ? R.drawable.ic_call_out : R.drawable.ic_call_in;
+            r.typeIcon.setImageResource(icon);
+            r.typeIcon.setImageTintList(ColorStateList.valueOf(c.missed() ? Ui.danger : Ui.muted));
+            r.typeIcon.setVisibility(View.VISIBLE);
             StringBuilder sub = new StringBuilder();
-            if (ct == null && c.name != null && !c.name.isEmpty()) sub.append(c.number).append(" · ");
-            else if (c.numberLabel != null && !c.numberLabel.isEmpty()) sub.append(c.numberLabel).append(" · ");
+            String label = ct != null ? labelFor(ct, c.number) : c.numberLabel;
+            if (!TextUtils.isEmpty(label)) sub.append(label).append("  ·  ");
             sub.append(Ui.ago(c.date));
-            String dur = Ui.duration(c.duration);
-            if (!dur.isEmpty()) sub.append(" · ").append(dur);
-            h.sub.setText(sub);
-            h.action.setOnClickListener(x -> placeCall(c.number, title));
-            h.action.setVisibility(c.number.isEmpty() ? View.INVISIBLE : View.VISIBLE);
-            h.header.setVisibility(View.GONE);
-            h.line.setOnClickListener(x -> showCallActions(c, ct, title));
-            h.line.setOnLongClickListener(x -> {
-                copy(c.number);
+            String d = Ui.duration(c.duration);
+            if (!d.isEmpty()) sub.append("  ·  ").append(d);
+            r.sub.setText(sub);
+            List<Notes.Item> notes = notesCache.get(c.number);
+            if (notes == null) {
+                notes = Notes.forNumber(MainActivity.this, c.number);
+                notesCache.put(c.number, notes);
+            }
+            Notes.Item note = Notes.forCall(notes, c.date, Notes.NOTE);
+            Notes.Item rec = Notes.forCall(notes, c.date, Notes.RECORDING);
+            if (note != null || rec != null) {
+                r.extra.setVisibility(View.VISIBLE);
+                r.extraText.setText(note != null ? note.text : "Recording, " + Ui.duration(rec.length));
+                r.extraIcon.setImageResource(note != null ? R.drawable.ic_notes : R.drawable.ic_record);
+                r.extraIcon.setImageTintList(ColorStateList.valueOf(note != null ? Ui.accent : Ui.danger));
+            } else {
+                r.extra.setVisibility(View.GONE);
+            }
+            r.action.setImageResource(R.drawable.ic_call);
+            r.action.setVisibility(c.number.isEmpty() ? View.INVISIBLE : View.VISIBLE);
+            r.action.setContentDescription("Call " + title);
+            r.action.setOnClickListener(Ui.tap(v -> Actions.call(MainActivity.this, c.number)));
+            r.line.setOnClickListener(Ui.tap(v -> {
+                if (c.number.isEmpty()) snack("This caller hid their number.");
+                else Actions.openContact(MainActivity.this, ct != null ? ct.id : -1, c.number);
+            }));
+            r.line.setOnLongClickListener(v -> {
+                recentActions(e, ct, title);
                 return true;
             });
-            return convert;
+            return r.root;
         }
     }
 
-    /** One list row: avatar, two lines of text, and a round action button. Shared by both lists. */
-    private final class RowHolder {
-        final LinearLayout root;
-        final TextView header, title, sub;
-        final AvatarView avatar;
-        final ImageView typeIcon, action;
+    private String labelFor(Data.Contact c, String number) {
+        for (Data.Number n : c.numbers) if (Data.sameNumber(n.number, number)) return n.label;
+        return "";
+    }
 
-        RowHolder(boolean callButton) {
+    private void recentActions(Entry e, Data.Contact ct, String title) {
+        Data.Call c = e.call;
+        if (c.number.isEmpty()) return;
+        boolean blocked = Phonebook.isBlocked(this, c.number);
+        Ui.actions(this, title,
+                new Ui.Action(R.drawable.ic_call, "Call", false, () -> Actions.call(this, c.number)),
+                new Ui.Action(R.drawable.ic_message, "Send message", false, () -> Actions.sms(this, c.number)),
+                Phonebook.whatsAppPackage(this) != null
+                        ? new Ui.Action(R.drawable.ic_chat, "WhatsApp", false, () -> Actions.whatsAppChat(this, c.number)) : null,
+                new Ui.Action(R.drawable.ic_dialpad, "Edit number before calling", false, () -> {
+                    number.setLength(0);
+                    number.append(c.number.replaceAll("[^0-9+*#]", ""));
+                    showTab(KEYPAD, true);
+                    refreshKeypad();
+                }),
+                new Ui.Action(R.drawable.ic_copy, "Copy number", false, () -> Actions.copy(this, c.number)),
+                ct == null ? new Ui.Action(R.drawable.ic_person_add, "Add to contacts", false, () -> Actions.addContact(this, c.number)) : null,
+                new Ui.Action(R.drawable.ic_block, blocked ? "Unblock number" : "Block number", !blocked, () -> toggleBlock(c.number, blocked)),
+                new Ui.Action(R.drawable.ic_delete, e.count > 1 ? "Delete these " + e.count + " calls" : "Delete from history", true, () -> {
+                    try {
+                        Phonebook.deleteCalls(this, e.ids);
+                        reload();
+                    } catch (Phonebook.Problem p) {
+                        Ui.snack(this, p.getMessage(), "Allow", () -> requestPermissions(new String[]{Manifest.permission.WRITE_CALL_LOG}, 9001));
+                    }
+                }));
+    }
+
+    private void toggleBlock(String n, boolean blocked) {
+        try {
+            if (blocked) Phonebook.unblock(this, n);
+            else Phonebook.block(this, n);
+            snack(blocked ? "Number unblocked." : "Number blocked. Calls from it won't ring.");
+        } catch (Phonebook.Problem p) {
+            Ui.snack(this, p.getMessage(), Actions.isDefaultPhoneApp(this) ? null : "Set up", () -> Actions.askToBeDefault(this));
+        }
+    }
+
+    /** One reusable list row. */
+    private final class Row {
+        final LinearLayout root, line, extra;
+        final AvatarView avatar;
+        final TextView header, title, sub, extraText;
+        final ImageView typeIcon, action, extraIcon;
+
+        Row() {
             root = new LinearLayout(MainActivity.this);
             root.setOrientation(LinearLayout.VERTICAL);
             root.setTag(this);
-            header = Ui.text(MainActivity.this, "", 13, Ui.ACCENT, true);
-            header.setPadding(dp(6), dp(14), 0, dp(4));
+            root.setLayoutParams(new AbsListView.LayoutParams(-1, -2));
+            header = Ui.section(MainActivity.this, "");
+            header.setVisibility(View.GONE);
             root.addView(header);
-
-            LinearLayout line = new LinearLayout(MainActivity.this);
+            line = new LinearLayout(MainActivity.this);
             line.setGravity(Gravity.CENTER_VERTICAL);
-            line.setPadding(dp(6), dp(9), dp(4), dp(9));
-            line.setBackground(Ui.rippleBg(0x00000000, dp(16)));
-            line.setDuplicateParentStateEnabled(false);
+            line.setMinimumHeight(dp(64));
+            line.setPadding(dp(8), dp(8), dp(2), dp(8));
+            line.setBackground(Ui.rippleRound(MainActivity.this, 0, 16));
             root.addView(line, new LinearLayout.LayoutParams(-1, -2));
-
             avatar = new AvatarView(MainActivity.this);
-            line.addView(avatar, new LinearLayout.LayoutParams(dp(46), dp(46)));
+            line.addView(avatar, new LinearLayout.LayoutParams(dp(44), dp(44)));
             LinearLayout texts = new LinearLayout(MainActivity.this);
             texts.setOrientation(LinearLayout.VERTICAL);
-            texts.setPadding(dp(14), 0, dp(8), 0);
-            title = Ui.text(MainActivity.this, "", 16, Color.WHITE, true);
-            title.setSingleLine(true);
-            title.setEllipsize(TextUtils.TruncateAt.END);
+            texts.setPadding(dp(14), 0, dp(6), 0);
+            title = Ui.oneLine(Ui.text(MainActivity.this, "", 16, Ui.text, true));
             texts.addView(title);
-            LinearLayout subLine = new LinearLayout(MainActivity.this);
-            subLine.setGravity(Gravity.CENTER_VERTICAL);
-            typeIcon = new ImageView(MainActivity.this);
-            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(dp(14), dp(14));
-            tlp.rightMargin = dp(4);
-            subLine.addView(typeIcon, tlp);
+            LinearLayout subRow = new LinearLayout(MainActivity.this);
+            subRow.setGravity(Gravity.CENTER_VERTICAL);
+            subRow.setPadding(0, dp(4), 0, 0);
+            typeIcon = Ui.icon(MainActivity.this, R.drawable.ic_call_in, Ui.muted);
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(dp(15), dp(15));
+            tlp.rightMargin = dp(5);
+            subRow.addView(typeIcon, tlp);
             typeIcon.setVisibility(View.GONE);
-            sub = Ui.text(MainActivity.this, "", 13, Ui.MUTED, false);
-            sub.setSingleLine(true);
-            sub.setEllipsize(TextUtils.TruncateAt.END);
-            subLine.addView(sub);
-            texts.addView(subLine);
+            sub = Ui.oneLine(Ui.text(MainActivity.this, "", 13, Ui.muted, false));
+            subRow.addView(sub, new LinearLayout.LayoutParams(0, -2, 1f));
+            texts.addView(subRow);
+            extra = new LinearLayout(MainActivity.this);
+            extra.setGravity(Gravity.CENTER_VERTICAL);
+            extra.setPadding(0, dp(5), 0, 0);
+            extraIcon = Ui.icon(MainActivity.this, R.drawable.ic_notes, Ui.accent);
+            LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(dp(14), dp(14));
+            elp.rightMargin = dp(6);
+            extra.addView(extraIcon, elp);
+            extraText = Ui.oneLine(Ui.text(MainActivity.this, "", 13, Ui.text, false));
+            extra.addView(extraText, new LinearLayout.LayoutParams(0, -2, 1f));
+            extra.setVisibility(View.GONE);
+            texts.addView(extra);
             line.addView(texts, new LinearLayout.LayoutParams(0, -2, 1f));
-            action = iconButton(callButton ? R.drawable.ic_call : R.drawable.ic_star,
-                    callButton ? Ui.GREEN : 0xFFFBBF24, callButton ? 0x3322C55E : 0x00000000, 40, null);
+            action = Ui.iconButton(MainActivity.this, R.drawable.ic_call, 48, 0, Ui.accent, "Call", null);
             line.addView(action);
-            // Clicks on the whole row go to the inner line so the ripple shows.
-            root.setClickable(false);
-            this.line = line;
+            Ui.press(line);
         }
-
-        final LinearLayout line;
     }
 
-    private void showCallActions(Data.Call c, Data.Contact ct, String title) {
-        if (c.number.isEmpty()) {
-            toast("Private number");
-            return;
-        }
-        List<String> opts = new ArrayList<>();
-        opts.add("Call");
-        opts.add("Send message");
-        opts.add("Edit before calling");
-        opts.add("Copy number");
-        opts.add(ct != null ? "View contact" : "Add to contacts");
-        opts.add("Assign gesture");
-        new AlertDialog.Builder(this)
-                .setTitle(title)
-                .setItems(opts.toArray(new String[0]), (d, which) -> {
-                    switch (opts.get(which)) {
-                        case "Call": placeCall(c.number, title); break;
-                        case "Send message": sms(c.number); break;
-                        case "Edit before calling":
-                            number.setLength(0);
-                            number.append(c.number.replaceAll("[^0-9+*#]", ""));
-                            showTab(TAB_KEYPAD, true);
-                            refreshKeypad();
-                            break;
-                        case "Copy number": copy(c.number); break;
-                        case "View contact": showContactSheet(ct); break;
-                        case "Add to contacts": addContact(c.number); break;
-                        case "Assign gesture": {
-                            Data.Contact target = ct != null ? ct : new Data.Contact(-1, null, title);
-                            beginAssign(target, new Data.Phone(c.number, ""));
-                            break;
-                        }
-                        default: break;
-                    }
-                })
-                .show();
-    }
-
-    // =================================================================== contacts
+    // ================================================================== contacts
 
     private View buildContacts() {
-        LinearLayout v = page();
-        ImageView add = iconButton(R.drawable.ic_add, Color.WHITE, Ui.ACCENT, 42, x -> addContact(""));
-        v.addView(titleRow("Contacts", add));
-        contactsSub = Ui.text(this, "", 13, Ui.MUTED, false);
-        v.addView(contactsSub);
+        LinearLayout p = page();
+        ImageView add = Ui.iconButton(this, R.drawable.ic_person_add, 48, 0, Ui.text, "New contact", v -> Actions.addContact(this, null));
+        p.addView(header("Contacts", add));
 
-        pickBanner = Ui.text(this, "", 14, Color.WHITE, true);
-        pickBanner.setPadding(dp(16), dp(12), dp(16), dp(12));
-        pickBanner.setBackground(Ui.rippleBg(Ui.ACCENT, dp(16)));
-        pickBanner.setOnClickListener(x -> cancelPick());
+        pickBanner = Ui.text(this, "", 14, Ui.text, true);
+        pickBanner.setMinHeight(dp(48));
+        pickBanner.setGravity(Gravity.CENTER_VERTICAL);
+        pickBanner.setPadding(dp(16), dp(10), dp(16), dp(10));
+        pickBanner.setBackground(Ui.rippleRound(this, Ui.alpha(Ui.accent, Ui.dark ? 0x33 : 0x22), 16));
+        pickBanner.setOnClickListener(Ui.tap(v -> cancelPick()));
         pickBanner.setVisibility(View.GONE);
         LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-1, -2);
-        plp.topMargin = dp(10);
-        v.addView(pickBanner, plp);
+        plp.bottomMargin = dp(10);
+        p.addView(pickBanner, plp);
 
-        searchBox = new EditText(this);
-        searchBox.setHint("Search name or number");
-        searchBox.setHintTextColor(0x66FFFFFF);
-        searchBox.setTextColor(Color.WHITE);
-        searchBox.setSingleLine(true);
-        searchBox.setBackground(Ui.round(0x33222B4D, dp(22)));
-        searchBox.setPadding(dp(16), dp(12), dp(16), dp(12));
-        Drawable s = getDrawable(R.drawable.ic_search);
-        if (s != null) {
-            s = s.mutate();
-            s.setTint(Ui.MUTED);
-            s.setBounds(0, 0, dp(20), dp(20));
-            searchBox.setCompoundDrawablesRelative(s, null, null, null);
-            searchBox.setCompoundDrawablePadding(dp(10));
-        }
-        searchBox.addTextChangedListener(new TextWatcher() {
-            @Override
-            public void beforeTextChanged(CharSequence a, int b, int c, int d) {}
-
-            @Override
-            public void onTextChanged(CharSequence a, int b, int c, int d) {}
+        LinearLayout searchRow = new LinearLayout(this);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setBackground(Ui.glassCard(this, 24, false));
+        searchRow.setPadding(dp(16), 0, dp(4), 0);
+        searchRow.addView(Ui.icon(this, R.drawable.ic_search, Ui.muted), new LinearLayout.LayoutParams(dp(20), dp(20)));
+        search = new EditText(this);
+        search.setHint("Search name, number or nickname");
+        search.setHintTextColor(Ui.muted);
+        search.setTextColor(Ui.text);
+        search.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        search.setSingleLine(true);
+        search.setBackground(null);
+        search.setPadding(dp(12), 0, dp(4), 0);
+        search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        searchRow.addView(search, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        ImageView clear = Ui.iconButton(this, R.drawable.ic_close, 44, 0, Ui.muted, "Clear search", v -> search.setText(""));
+        clear.setVisibility(View.GONE);
+        searchRow.addView(clear);
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
 
             @Override
             public void afterTextChanged(Editable e) {
-                query = e.toString().trim();
+                clear.setVisibility(e.length() > 0 ? View.VISIBLE : View.GONE);
                 refreshContacts();
             }
         });
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
-        slp.topMargin = dp(12);
-        v.addView(searchBox, slp);
+        p.addView(searchRow, new LinearLayout.LayoutParams(-1, -2));
 
+        contactList = list();
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.VERTICAL);
         favSection = new LinearLayout(this);
         favSection.setOrientation(LinearLayout.VERTICAL);
-        TextView favTitle = Ui.text(this, "Favourites", 13, Ui.ACCENT, true);
-        favTitle.setPadding(dp(6), dp(14), 0, dp(6));
-        favSection.addView(favTitle);
+        favSection.addView(Ui.section(this, "Favourites"));
         HorizontalScrollView hs = new HorizontalScrollView(this);
         hs.setHorizontalScrollBarEnabled(false);
         favRow = new LinearLayout(this);
         hs.addView(favRow);
         favSection.addView(hs);
-        v.addView(favSection);
+        head.addView(favSection);
+        contactCount = Ui.section(this, "");
+        head.addView(contactCount);
+        contactList.addHeaderView(head, null, false);
+        contactList.setAdapter(contactsAdapter);
+        contactList.setFastScrollEnabled(true);
+        contactList.setOnScrollListener(new AbsListView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(AbsListView v, int s) {
+                if (s == SCROLL_STATE_TOUCH_SCROLL) hideKeyboard();
+            }
 
+            @Override public void onScroll(AbsListView v, int a, int b, int c) { }
+        });
         FrameLayout frame = new FrameLayout(this);
-        v.addView(frame, new LinearLayout.LayoutParams(-1, 0, 1f));
-        contactsList = makeList();
-        contactsList.setAdapter(contactsAdapter);
-        contactsList.setFastScrollEnabled(true);
-        frame.addView(contactsList, new FrameLayout.LayoutParams(-1, -1));
+        frame.addView(contactList, new FrameLayout.LayoutParams(-1, -1));
         TextView[] refs = new TextView[2];
-        contactsEmpty = emptyState("", "Allow access", x -> requestOrOpenSettings(Manifest.permission.READ_CONTACTS), refs);
-        contactsEmptyText = refs[0];
-        contactsEmptyBtn = refs[1];
-        frame.addView(contactsEmpty, new FrameLayout.LayoutParams(-1, -1));
-        return v;
+        contactEmpty = emptyState("Allow access", () -> requestOrSettings(Manifest.permission.READ_CONTACTS), refs);
+        contactEmptyText = refs[0];
+        contactEmptyButton = refs[1];
+        frame.addView(contactEmpty, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(-1, 0, 1f);
+        flp.topMargin = dp(4);
+        p.addView(frame, flp);
+        return p;
     }
 
     private void refreshContacts() {
-        if (contactsList == null) return;
-        boolean allowed = has(Manifest.permission.READ_CONTACTS);
-        String q = query.toLowerCase(Locale.ROOT);
-        String qd = Data.digits(query);
-        List<Data.Contact> filtered = new ArrayList<>();
-        for (Data.Contact c : contacts) {
-            if (q.isEmpty() || c.name.toLowerCase(Locale.ROOT).contains(q)) {
-                filtered.add(c);
-                continue;
-            }
-            if (qd.length() >= 2) {
-                for (String d : c.digitsList) {
-                    if (d.contains(qd)) {
-                        filtered.add(c);
-                        break;
-                    }
-                }
-            }
-        }
-        contactsAdapter.items = filtered;
-        contactsAdapter.notifyDataSetChanged();
-        contactsSub.setText(contacts.isEmpty() ? "" : contacts.size() + " people");
-
-        favRow.removeAllViews();
-        int favCount = 0;
-        for (Data.Contact c : contacts) {
-            if (!c.starred) continue;
-            favCount++;
-            favRow.addView(favItem(c));
-        }
-        favSection.setVisibility(favCount > 0 && q.isEmpty() ? View.VISIBLE : View.GONE);
-
-        if (!allowed) {
-            contactsEmptyText.setText("Orbit Dial needs permission to show your contacts.");
-            contactsEmptyBtn.setVisibility(View.VISIBLE);
+        if (contactList == null) return;
+        boolean allowed = Actions.has(this, Manifest.permission.READ_CONTACTS);
+        String q = search.getText().toString().trim();
+        List<Data.Contact> shown = new ArrayList<>();
+        if (q.isEmpty()) {
+            for (Data.Contact c : Data.contacts) if (!c.numbers.isEmpty()) shown.add(c);
         } else {
-            contactsEmptyText.setText(q.isEmpty() ? "No contacts with phone numbers yet." : "No matches for \"" + query + "\".");
-            contactsEmptyBtn.setVisibility(View.GONE);
+            for (Data.Match m : Data.search(q, false, 500)) shown.add(m.contact);
         }
-        contactsEmpty.setVisibility(filtered.isEmpty() ? View.VISIBLE : View.GONE);
-    }
-
-    private View favItem(Data.Contact c) {
-        LinearLayout item = new LinearLayout(this);
-        item.setOrientation(LinearLayout.VERTICAL);
-        item.setGravity(Gravity.CENTER_HORIZONTAL);
-        item.setPadding(dp(6), dp(4), dp(6), dp(4));
-        item.setBackground(Ui.rippleBg(0x00000000, dp(16)));
-        AvatarView av = new AvatarView(this);
-        av.set(c.name, c.lookupKey);
-        Data.bindPhoto(this, av, c.photoUri);
-        item.addView(av, new LinearLayout.LayoutParams(dp(58), dp(58)));
-        TextView n = Ui.text(this, c.name.split("\\s+")[0], 12, Color.WHITE, false);
-        n.setSingleLine(true);
-        n.setEllipsize(TextUtils.TruncateAt.END);
-        n.setMaxWidth(dp(70));
-        n.setGravity(Gravity.CENTER);
-        n.setPadding(0, dp(4), 0, 0);
-        item.addView(n);
-        item.setOnClickListener(x -> onContactTapped(c));
-        item.setOnLongClickListener(x -> {
-            placeCall(c.primaryNumber(), c.name);
-            return true;
-        });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(78), -2);
-        item.setLayoutParams(lp);
-        return item;
+        contactsAdapter.items = shown;
+        contactsAdapter.searching = !q.isEmpty();
+        contactsAdapter.notifyDataSetChanged();
+        contactCount.setText(q.isEmpty() ? (shown.isEmpty() ? "" : shown.size() + " contacts") : shown.size() + " found");
+        favRow.removeAllViews();
+        for (Data.Contact c : Data.contacts) if (c.starred && !c.numbers.isEmpty()) favRow.addView(favourite(c, 60));
+        favSection.setVisibility(q.isEmpty() && favRow.getChildCount() > 0 ? View.VISIBLE : View.GONE);
+        if (!allowed) {
+            contactEmptyText.setText("Orbit Dial needs access to your contacts to show them here.");
+            contactEmptyButton.setVisibility(View.VISIBLE);
+        } else {
+            contactEmptyText.setText(q.isEmpty() ? "No contacts with phone numbers yet." : "No one matches \"" + q + "\".");
+            contactEmptyButton.setVisibility(View.GONE);
+        }
+        contactEmpty.setVisibility(shown.isEmpty() && (Data.loaded || !allowed) ? View.VISIBLE : View.GONE);
     }
 
     private final class ContactsAdapter extends BaseAdapter {
         List<Data.Contact> items = new ArrayList<>();
+        boolean searching;
 
-        @Override
-        public int getCount() {
-            return items.size();
-        }
-
-        @Override
-        public Object getItem(int i) {
-            return items.get(i);
-        }
-
-        @Override
-        public long getItemId(int i) {
-            return items.get(i).id;
-        }
+        @Override public int getCount() { return items.size(); }
+        @Override public Object getItem(int i) { return items.get(i); }
+        @Override public long getItemId(int i) { return items.get(i).id; }
 
         @Override
         public View getView(int pos, View convert, ViewGroup parent) {
-            RowHolder h;
-            if (convert == null) {
-                h = new RowHolder(false);
-                convert = h.root;
-            } else {
-                h = (RowHolder) convert.getTag();
-            }
+            Row r = convert != null && convert.getTag() instanceof Row ? (Row) convert.getTag() : new Row();
             Data.Contact c = items.get(pos);
             char sec = c.section();
-            boolean showHeader = pos == 0 || items.get(pos - 1).section() != sec;
-            h.header.setText(String.valueOf(sec));
-            h.header.setVisibility(showHeader ? View.VISIBLE : View.GONE);
-            h.avatar.set(c.name, c.lookupKey);
-            Data.bindPhoto(MainActivity.this, h.avatar, c.photoUri);
-            h.title.setText(c.name);
-            h.title.setTextColor(Color.WHITE);
-            Data.Phone p = c.phones.isEmpty() ? null : c.phones.get(0);
-            String sub = p == null ? "" : (p.label.isEmpty() ? "" : p.label + " · ") + p.number;
-            if (c.phones.size() > 1) sub += "  +" + (c.phones.size() - 1);
-            h.sub.setText(sub);
-            h.typeIcon.setVisibility(View.GONE);
-            h.action.setVisibility(c.starred ? View.VISIBLE : View.GONE);
-            h.action.setOnClickListener(null);
-            h.action.setClickable(false);
-            h.line.setOnClickListener(x -> onContactTapped(c));
-            h.line.setOnLongClickListener(x -> {
-                placeCall(c.primaryNumber(), c.name);
+            boolean head = !searching && (pos == 0 || items.get(pos - 1).section() != sec);
+            r.header.setText(String.valueOf(sec));
+            r.header.setVisibility(head ? View.VISIBLE : View.GONE);
+            r.avatar.set(c.name, c.lookupKey);
+            Data.bindPhoto(MainActivity.this, r.avatar, c.thumbUri);
+            r.title.setText(c.name);
+            r.title.setTextColor(Ui.text);
+            r.typeIcon.setVisibility(View.GONE);
+            Data.Number n = c.numbers.get(0);
+            String sub = (n.label.isEmpty() ? "" : n.label + "  ·  ") + n.number;
+            if (c.numbers.size() > 1) sub += "  ·  +" + (c.numbers.size() - 1) + " more";
+            r.sub.setText(sub);
+            r.extra.setVisibility(View.GONE);
+            r.action.setImageResource(R.drawable.ic_call);
+            r.action.setVisibility(View.VISIBLE);
+            r.action.setContentDescription("Call " + c.name);
+            r.action.setOnClickListener(Ui.tap(v -> {
+                if (pickPattern != null) onContactPicked(c);
+                else Actions.call(MainActivity.this, c.primary());
+            }));
+            r.line.setOnClickListener(Ui.tap(v -> {
+                if (pickPattern != null) onContactPicked(c);
+                else Actions.openContact(MainActivity.this, c.id, c.primary());
+            }));
+            r.line.setOnLongClickListener(v -> {
+                Ui.actions(MainActivity.this, c.name,
+                        new Ui.Action(R.drawable.ic_call, "Call", false, () -> Actions.call(MainActivity.this, c.primary())),
+                        new Ui.Action(R.drawable.ic_message, "Send message", false, () -> Actions.sms(MainActivity.this, c.primary())),
+                        Phonebook.whatsAppPackage(MainActivity.this) != null
+                                ? new Ui.Action(R.drawable.ic_chat, "WhatsApp", false, () -> Actions.whatsAppChat(MainActivity.this, c.primary())) : null,
+                        new Ui.Action(c.starred ? R.drawable.ic_star : R.drawable.ic_star_border,
+                                c.starred ? "Remove from favourites" : "Add to favourites", false, () -> {
+                            try {
+                                Phonebook.setStarred(MainActivity.this, c.id, !c.starred);
+                                c.starred = !c.starred;
+                                refreshAll();
+                            } catch (Phonebook.Problem p) {
+                                snack(p.getMessage());
+                            }
+                        }),
+                        new Ui.Action(R.drawable.ic_edit, "Edit contact", false, () -> Actions.editContact(MainActivity.this, c.id, c.lookupKey)));
                 return true;
             });
-            return convert;
+            return r.root;
         }
-    }
-
-    private void onContactTapped(Data.Contact c) {
-        if (pickForGesture != null) {
-            choosePhone(c, phone -> {
-                gestures.put(pickForGesture, c.name, phone.number);
-                toast(Stores.prettify(pickForGesture) + " now calls " + c.name);
-                cancelPick();
-                showTab(TAB_KEYPAD, true);
-                refreshKeypad();
-            });
-        } else {
-            showContactSheet(c);
-        }
-    }
-
-    private interface PhoneChoice {
-        void chosen(Data.Phone p);
-    }
-
-    private void choosePhone(Data.Contact c, PhoneChoice cb) {
-        if (c.phones.isEmpty()) {
-            toast("No phone number saved");
-            return;
-        }
-        if (c.phones.size() == 1) {
-            cb.chosen(c.phones.get(0));
-            return;
-        }
-        String[] items = new String[c.phones.size()];
-        for (int i = 0; i < items.length; i++) {
-            Data.Phone p = c.phones.get(i);
-            items[i] = (p.label.isEmpty() ? "" : p.label + ": ") + p.number;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle(c.name)
-                .setItems(items, (d, which) -> cb.chosen(c.phones.get(which)))
-                .show();
-    }
-
-    private void startPick(String pattern) {
-        pickForGesture = pattern;
-        pickBanner.setText("Tap who " + Stores.prettify(pattern) + " should call   ·   tap here to cancel");
-        pickBanner.setVisibility(View.VISIBLE);
-        showTab(TAB_CONTACTS, true);
-        if (!has(Manifest.permission.READ_CONTACTS)) requestOrOpenSettings(Manifest.permission.READ_CONTACTS);
-    }
-
-    private void cancelPick() {
-        pickForGesture = null;
-        pickBanner.setVisibility(View.GONE);
-    }
-
-    private void beginAssign(Data.Contact c, Data.Phone p) {
-        assignContact = c;
-        assignPhone = p;
-        showTab(TAB_KEYPAD, true);
-        refreshKeypad();
-        toast("Now draw a path across 3 or more keys");
-    }
-
-    /** Bottom sheet with the contact's numbers and quick actions. */
-    private void showContactSheet(Data.Contact c) {
-        if (c == null) return;
-        Dialog dlg = new Dialog(this);
-        dlg.requestWindowFeature(Window.FEATURE_NO_TITLE);
-
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setGravity(Gravity.CENTER_HORIZONTAL);
-        sheet.setPadding(dp(22), dp(14), dp(22), dp(26));
-        sheet.setBackground(Ui.round(Ui.SURFACE, dp(28)));
-
-        View grip = new View(this);
-        grip.setBackground(Ui.round(0x44FFFFFF, dp(3)));
-        sheet.addView(grip, new LinearLayout.LayoutParams(dp(40), dp(5)));
-
-        AvatarView av = new AvatarView(this);
-        av.set(c.name, c.lookupKey);
-        Data.bindPhoto(this, av, c.photoUri);
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(84), dp(84));
-        alp.topMargin = dp(16);
-        sheet.addView(av, alp);
-        TextView name = Ui.text(this, c.name, 22, Color.WHITE, true);
-        name.setGravity(Gravity.CENTER);
-        name.setPadding(0, dp(10), 0, 0);
-        sheet.addView(name);
-
-        String gesture = null;
-        for (Stores.Gesture g : gestures.all()) {
-            for (Data.Phone p : c.phones) if (Data.sameNumber(p.number, g.number)) gesture = g.prettyPattern();
-        }
-        TextView meta = Ui.text(this, gesture != null ? "Gesture  " + gesture : (c.starred ? "★ Favourite" : ""), 13, Ui.CYAN, false);
-        meta.setGravity(Gravity.CENTER);
-        sheet.addView(meta);
-
-        for (Data.Phone p : c.phones) {
-            LinearLayout row = new LinearLayout(this);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(14), dp(10), dp(8), dp(10));
-            row.setBackground(Ui.round(0x22FFFFFF, dp(18)));
-            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(-1, -2);
-            rlp.topMargin = dp(10);
-            sheet.addView(row, rlp);
-            LinearLayout texts = new LinearLayout(this);
-            texts.setOrientation(LinearLayout.VERTICAL);
-            texts.addView(Ui.text(this, p.number, 16, Color.WHITE, true));
-            texts.addView(Ui.text(this, p.label.isEmpty() ? "Phone" : p.label, 12, Ui.MUTED, false));
-            row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1f));
-            ImageView msg = iconButton(R.drawable.ic_message, Color.WHITE, Ui.SURFACE2, 42, x -> sms(p.number));
-            row.addView(msg);
-            ImageView call = iconButton(R.drawable.ic_call, Color.WHITE, Ui.GREEN, 42, x -> {
-                dlg.dismiss();
-                placeCall(p.number, c.name);
-            });
-            LinearLayout.LayoutParams clp = (LinearLayout.LayoutParams) call.getLayoutParams();
-            clp.leftMargin = dp(8);
-            row.addView(call);
-            row.setOnLongClickListener(x -> {
-                copy(p.number);
-                return true;
-            });
-        }
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams aclp = new LinearLayout.LayoutParams(-1, -2);
-        aclp.topMargin = dp(18);
-        sheet.addView(actions, aclp);
-        TextView assign = Ui.pill(this, "Assign gesture", Ui.ACCENT, x -> {
-            dlg.dismiss();
-            choosePhone(c, p -> beginAssign(c, p));
-        });
-        actions.addView(assign);
-        if (c.id >= 0 && c.lookupKey != null) {
-            TextView open = Ui.pill(this, "Edit", 0x33FFFFFF, x -> {
-                dlg.dismiss();
-                try {
-                    startActivity(new Intent(Intent.ACTION_VIEW,
-                            ContactsContract.Contacts.getLookupUri(c.id, c.lookupKey)));
-                } catch (ActivityNotFoundException e) {
-                    toast("No contacts app found");
-                }
-            });
-            LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(-2, -2);
-            olp.leftMargin = dp(10);
-            actions.addView(open, olp);
-        }
-
-        dlg.setContentView(sheet);
-        Window w = dlg.getWindow();
-        if (w != null) {
-            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            w.setGravity(Gravity.BOTTOM);
-            w.getDecorView().setPadding(dp(8), 0, dp(8), dp(8));
-        }
-        sheet.setTranslationY(dp(300));
-        sheet.setAlpha(0f);
-        dlg.setOnShowListener(d -> sheet.animate().translationY(0).alpha(1f).setDuration(260).start());
-        dlg.show();
-    }
-
-    // ===================================================================== actions
-
-    private void placeCall(String num, String label) {
-        if (num == null || num.isEmpty()) {
-            toast("No number");
-            return;
-        }
-        if (has(Manifest.permission.CALL_PHONE)) {
-            startCall(num, Intent.ACTION_CALL);
-        } else {
-            pendingCallNumber = num;
-            pendingCallLabel = label;
-            requestPermissions(new String[]{Manifest.permission.CALL_PHONE}, REQ_CALL);
-        }
-    }
-
-    private void startCall(String num, String action) {
-        try {
-            startActivity(new Intent(action, Uri.fromParts("tel", num, null)));
-        } catch (ActivityNotFoundException | SecurityException e) {
-            if (Intent.ACTION_CALL.equals(action)) startCall(num, Intent.ACTION_DIAL);
-            else toast("This device can't place calls");
-        }
-    }
-
-    private void sms(String num) {
-        if (num == null || num.isEmpty()) return;
-        try {
-            startActivity(new Intent(Intent.ACTION_SENDTO, Uri.fromParts("smsto", num, null)));
-        } catch (ActivityNotFoundException e) {
-            toast("No messaging app found");
-        }
-    }
-
-    private void addContact(String num) {
-        Intent i = new Intent(Intent.ACTION_INSERT, ContactsContract.Contacts.CONTENT_URI);
-        if (num != null && !num.isEmpty()) i.putExtra(ContactsContract.Intents.Insert.PHONE, num);
-        try {
-            startActivity(i);
-        } catch (ActivityNotFoundException e) {
-            toast("No contacts app found");
-        }
-    }
-
-    private void copy(String text) {
-        if (text == null || text.isEmpty()) return;
-        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        if (cm != null) {
-            cm.setPrimaryClip(ClipData.newPlainText("Phone number", text));
-            toast("Copied");
-        }
-    }
-
-    private String detectCountry() {
-        try {
-            TelephonyManager tm = (TelephonyManager) getSystemService(TELEPHONY_SERVICE);
-            String iso = tm != null ? tm.getNetworkCountryIso() : null;
-            if (TextUtils.isEmpty(iso) && tm != null) iso = tm.getSimCountryIso();
-            if (!TextUtils.isEmpty(iso)) return iso.toUpperCase(Locale.ROOT);
-        } catch (RuntimeException ignored) {
-        }
-        return Locale.getDefault().getCountry();
-    }
-
-    private String format(String raw) {
-        if (raw.isEmpty() || raw.contains("*") || raw.contains("#")) return raw;
-        String f = PhoneNumberUtils.formatNumber(raw, countryIso);
-        return f != null ? f : raw;
-    }
-
-    private void toast(String s) {
-        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
     }
 }

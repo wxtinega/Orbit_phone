@@ -1,12 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Needed to place calls directly. If denied, Orbit Dial hands the number to the system dialer. -->
+    <!-- Calls -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
-    <!-- Show your real call history and contacts. Read on the phone only; nothing is uploaded. -->
-    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Contacts and call history: read to show them, write for photos, ringtones, favourites and deleting history -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
+    <!-- Incoming call screen and notifications -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Headset and car names in the audio picker -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Optional call recording (off until turned on in Settings) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.proximity" android:required="false" />
+
+    <queries>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="smsto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.INSERT" />
+            <data android:mimeType="vnd.android.cursor.dir/contact" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.RINGTONE_PICKER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.GET_CONTENT" />
+            <data android:mimeType="image/*" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
@@ -20,13 +57,16 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="portrait"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize|stateHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Appear in "Open with" when another app wants to dial a number. -->
+            <!-- These make Orbit Dial a phone app Android can set as default. -->
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.DIAL" />
                 <action android:name="android.intent.action.VIEW" />
@@ -35,9 +75,71 @@
                 <data android:scheme="tel" />
             </intent-filter>
             <intent-filter>
-                <action android:name="android.intent.action.DIAL" />
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="vnd.android.cursor.dir/calls" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.CALL_BUTTON" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!-- Private entry point for home-screen favourites and "Call back" on missed calls. -->
+        <activity-alias
+            android:name=".CallFavourite"
+            android:exported="false"
+            android:targetActivity=".MainActivity" />
+
+        <activity
+            android:name=".OnboardingActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ContactActivity"
+            android:exported="false" />
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false" />
+        <activity
+            android:name=".InCallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:taskAffinity=".incall"
+            android:turnScreenOn="true"
+            android:windowSoftInputMode="adjustResize|stateHidden" />
+
+        <service
+            android:name=".CallService"
+            android:exported="true"
+            android:permission="android.permission.BIND_INCALL_SERVICE">
+            <meta-data
+                android:name="android.telecom.IN_CALL_SERVICE_UI"
+                android:value="true" />
+            <intent-filter>
+                <action android:name="android.telecom.InCallService" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".RecorderService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Notification buttons: only Orbit Dial can send these. -->
+        <receiver
+            android:name=".CallActionReceiver"
+            android:exported="false" />
+
+        <!-- Sent by the phone system to the default phone app; only the system can send it. -->
+        <receiver
+            android:name=".MissedCallReceiver"
+            android:exported="true"
+            android:permission="android.permission.MODIFY_PHONE_STATE">
+            <intent-filter>
+                <action android:name="android.telecom.action.SHOW_MISSED_CALLS_NOTIFICATION" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
