@@ -74,7 +74,9 @@ final class CallNotifier {
             if (Build.VERSION.SDK_INT >= 31) {
                 Person.Builder p = new Person.Builder().setName(title(info)).setImportant(true);
                 if (info.photo != null) p.setIcon(Icon.createWithBitmap(info.photo));
-                b.setStyle(Notification.CallStyle.forIncomingCall(p.build(), decline, answer));
+                b.setStyle(Notification.CallStyle.forIncomingCall(p.build(), decline, answer)
+                        .setAnswerButtonColorHint(Ui.accent)
+                        .setDeclineButtonColorHint(Ui.DANGER));
             } else {
                 b.addAction(new Notification.Action.Builder(Icon.createWithResource(c, R.drawable.ic_call_end), "Decline", decline).build());
                 b.addAction(new Notification.Action.Builder(Icon.createWithResource(c, R.drawable.ic_call), "Answer", answer).build());

@@ -102,6 +102,7 @@ final class Ui {
     static void applyWindow(Activity a, View root) {
         load(a);
         Window w = a.getWindow();
+        w.getDecorView(); // make sure the window exists before styling its bars
         w.setStatusBarColor(Color.TRANSPARENT);
         w.setNavigationBarColor(Color.TRANSPARENT);
         if (Build.VERSION.SDK_INT >= 29) {
