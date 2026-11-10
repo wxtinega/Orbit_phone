@@ -48,12 +48,14 @@ final class Ui {
     static int accent, onAccent, text, muted, faint, glass, glassStrong, field, scrim, solidBg, sheet, danger;
     static final int DANGER = 0xFFE5484D;
     static float glassLevel; // 0 = solid, 1 = soft, 2 = strong
+    private static Context app; // for date formatting (12/24-hour clock)
 
     /** Avatar colours. Warm and cool tones, no purple, no green. */
     private static final int[] AVATAR = {0xFFF86939, 0xFF2F80ED, 0xFF0EA5A4, 0xFFE8456B, 0xFFE0A100,
             0xFF64748B, 0xFF0284C7, 0xFFC2410C, 0xFFBE185D, 0xFF0F766E};
 
     static void load(Context c) {
+        app = c.getApplicationContext();
         String mode = Prefs.mode(c);
         boolean sysDark = (c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
@@ -688,8 +690,8 @@ final class Ui {
         long diff = now - time;
         if (diff < DateUtils.MINUTE_IN_MILLIS) return "Just now";
         if (diff < DateUtils.HOUR_IN_MILLIS) return (diff / DateUtils.MINUTE_IN_MILLIS) + " min ago";
-        if (isSameDay(time, now)) return DateUtils.formatDateTime(null, time, DateUtils.FORMAT_SHOW_TIME);
-        return DateUtils.formatDateTime(null, time, DateUtils.FORMAT_SHOW_TIME);
+        if (isSameDay(time, now)) return DateUtils.formatDateTime(app, time, DateUtils.FORMAT_SHOW_TIME);
+        return DateUtils.formatDateTime(app, time, DateUtils.FORMAT_SHOW_TIME);
     }
 
     static String dayLabel(long time) {
@@ -697,9 +699,9 @@ final class Ui {
         if (isSameDay(time, now)) return "Today";
         if (isSameDay(time, now - DateUtils.DAY_IN_MILLIS)) return "Yesterday";
         if (now - time < 6 * DateUtils.DAY_IN_MILLIS) {
-            return DateUtils.formatDateTime(null, time, DateUtils.FORMAT_SHOW_WEEKDAY);
+            return DateUtils.formatDateTime(app, time, DateUtils.FORMAT_SHOW_WEEKDAY);
         }
-        return DateUtils.formatDateTime(null, time, DateUtils.FORMAT_SHOW_DATE | DateUtils.FORMAT_ABBREV_MONTH);
+        return DateUtils.formatDateTime(app, time, DateUtils.FORMAT_SHOW_DATE | DateUtils.FORMAT_ABBREV_MONTH);
     }
 
     static boolean isSameDay(long a, long b) {

@@ -449,7 +449,7 @@ public class MainActivity extends BaseActivity implements OrbitDialView.Listener
         numberView.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         numberView.setGravity(Gravity.CENTER);
         numberView.setSingleLine(true);
-        numberView.setAutoSizeTextTypeUniformWithConfiguration(18, 36, 1, TypedValue.COMPLEX_UNIT_SP);
+        numberView.setEllipsize(android.text.TextUtils.TruncateAt.START);
         numberView.setHint("Enter a number");
         numberView.setHintTextColor(Ui.alpha(Ui.muted, 0x99));
         numberView.setOnLongClickListener(v -> {
@@ -532,7 +532,11 @@ public class MainActivity extends BaseActivity implements OrbitDialView.Listener
     private void refreshKeypad() {
         if (numberView == null) return;
         String n = number.toString();
-        numberView.setText(format(n));
+        String shown = format(n);
+        // Hint reads small; long numbers shrink so they always fit on one line.
+        float size = shown.isEmpty() ? 18 : shown.length() <= 12 ? 36 : shown.length() <= 16 ? 30 : 24;
+        numberView.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
+        numberView.setText(shown);
         Data.Contact exact = n.length() >= 3 ? Data.find(n) : null;
         matchView.setText(exact != null ? exact.name : "");
         dial.setReady(!n.isEmpty());
