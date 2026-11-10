@@ -2,7 +2,11 @@ name: Build APK
 
 on:
   push:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -29,3 +33,44 @@ jobs:
         with:
           name: OrbitDial-apk
           path: OrbitDial.apk
+
+  # Installs the app on an Android emulator, simulates calls, and saves screenshots
+  # to the "ui-shots" branch so the design can be checked on a real Android system.
+  ui-check:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: OrbitDial-apk
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash .github/scripts/ui-check.sh
+
+      - name: Publish screenshots
+        if: always()
+        run: |
+          mkdir -p shots
+          cd shots
+          git init -q
+          git checkout -q -b ui-shots
+          git add -A
+          git -c user.name="Orbit Dial CI" -c user.email="ci@users.noreply.github.com" commit -q -m "UI check for ${GITHUB_SHA::7}" || exit 0
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" ui-shots
