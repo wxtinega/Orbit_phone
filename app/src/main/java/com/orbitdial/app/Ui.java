@@ -59,7 +59,8 @@ final class Ui {
         String mode = Prefs.mode(c);
         boolean sysDark = (c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
-        dark = Prefs.MODE_DARK.equals(mode) || (Prefs.MODE_AUTO.equals(mode) && sysDark);
+        // The call screen is always dark, so names and buttons read clearly over any photo.
+        dark = c instanceof InCallActivity || Prefs.MODE_DARK.equals(mode) || (Prefs.MODE_AUTO.equals(mode) && sysDark);
         accent = Prefs.accent(c);
         if (dark && accent == 0xFF5B6472) accent = 0xFFA3ACBA; // graphite needs to be lighter on dark
         onAccent = 0xFFFFFFFF;

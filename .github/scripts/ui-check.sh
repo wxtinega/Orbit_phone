@@ -4,6 +4,15 @@ mkdir -p shots
 PKG=com.orbitdial.app
 shot() { sleep "${2:-3}"; adb exec-out screencap -p > "shots/$1.png"; echo "shot $1"; }
 start() { adb shell am start -W -n "$PKG/$1" "${@:2}" > /dev/null; }
+top() { adb shell dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity" | tr -d '\r'; }
+tapdesc() { # taps the view whose accessibility label is $1
+  adb shell uiautomator dump /sdcard/u.xml > /dev/null 2>&1
+  local b=$(adb shell cat /sdcard/u.xml | tr '>' '\n' | grep "content-desc=\"$1\"" | head -1 | grep -o 'bounds="[^"]*"' | grep -o '[0-9]*' | tr '\n' ' ')
+  set -- $b
+  if [ -z "$4" ]; then echo "  (could not find button)" >> shots/back.txt; return; fi
+  adb shell input tap $(( ($1 + $3) / 2 )) $(( ($2 + $4) / 2 ))
+}
+check() { sleep 2; echo "$1 -> $(top)" >> shots/back.txt; }
 
 adb root; sleep 3; adb wait-for-device
 adb install -r -g OrbitDial.apk || exit 1
@@ -51,13 +60,24 @@ start .MainActivity --ei tab 1; shot 04-recents-light
 start .MainActivity --ei tab 2; shot 05-contacts-light
 cid=$(adb shell content query --uri content://com.android.contacts/contacts --projection _id --where "display_name=\'Grace\ Wanjiru\'" | head -1 | sed 's/.*_id=\([0-9]*\).*/\1/' | tr -d '\r')
 start .ContactActivity --el id $cid; shot 06-contact-light
+tapdesc Back; check "Contact page, back arrow"
+start .ContactActivity --el id $cid; sleep 2; adb shell input keyevent KEYCODE_BACK; check "Contact page, back key"
 start .SettingsActivity; shot 07-settings-light
 adb shell input swipe 540 1800 540 600 300; shot 08-settings-light-2 2
+tapdesc Back; check "Settings, back arrow"
+start .SettingsActivity; sleep 2; adb shell input keyevent KEYCODE_BACK; check "Settings, back key"
+start .MainActivity --ei tab 2; sleep 2; adb shell input tap 540 1050; sleep 3; echo "Opened from Contacts list -> $(top)" >> shots/back.txt
+tapdesc Back; check "Contact opened from list, back arrow"
+adb shell input keyevent KEYCODE_BACK; check "Contacts tab, back key"
 
 # Incoming and in-call screens
 adb shell input keyevent KEYCODE_HOME
 adb emu gsm call 0712345678; shot 09-incoming-light 4
 adb emu gsm accept 0712345678; shot 10-incall-light 4
+tapdesc Keypad; shot 10b-incall-keypad 2
+adb shell input keyevent KEYCODE_BACK; shot 10c-incall-after-back 2
+adb shell input keyevent KEYCODE_BACK; check "In call, back key"
+adb shell am start -W -n "$PKG/.InCallActivity" > /dev/null; sleep 2
 adb emu gsm cancel 0712345678; shot 11-ended-light 2
 
 # Dark mode and the classic dial pad

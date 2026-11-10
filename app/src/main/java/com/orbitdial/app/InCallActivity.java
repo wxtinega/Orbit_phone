@@ -67,7 +67,9 @@ public class InCallActivity extends BaseActivity implements CallManager.Listener
         photoBg.setAlpha(0f);
         root.addView(photoBg, new FrameLayout.LayoutParams(-1, -1));
         photoScrim = new View(this);
-        photoScrim.setBackgroundColor(Ui.dark ? 0xB30C0C0E : 0xBFF4F4F6);
+        photoScrim.setBackground(new android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0xB3000000, 0x26000000, 0x40000000, 0xE6000000}));
         photoScrim.setAlpha(0f);
         root.addView(photoScrim, new FrameLayout.LayoutParams(-1, -1));
 
@@ -84,6 +86,19 @@ public class InCallActivity extends BaseActivity implements CallManager.Listener
         holdBanner.setVisibility(View.GONE);
         col.addView(holdBanner, new LinearLayout.LayoutParams(-1, -2));
 
+        avatar = new AvatarView(this);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(84), dp(84));
+        alp.topMargin = dp(36);
+        col.addView(avatar, alp);
+        nameView = Ui.text(this, "", 34, Ui.text, false);
+        nameView.setGravity(Gravity.CENTER);
+        nameView.setMaxLines(2);
+        nameView.setEllipsize(TextUtils.TruncateAt.END);
+        nameView.setLetterSpacing(-0.01f);
+        nameView.setPadding(0, dp(14), 0, 0);
+        nameView.setShadowLayer(dp(8), 0, 0, 0x66000000);
+        col.addView(nameView, new LinearLayout.LayoutParams(-1, -2));
+
         statusRow = new LinearLayout(this);
         statusRow.setGravity(Gravity.CENTER);
         recDot = new LivelyBackground(this, Ui.danger);
@@ -91,7 +106,7 @@ public class InCallActivity extends BaseActivity implements CallManager.Listener
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(dp(14), dp(14));
         rlp.rightMargin = dp(8);
         statusRow.addView(recDot, rlp);
-        status = Ui.oneLine(Ui.text(this, "", 15, Ui.muted, false));
+        status = Ui.oneLine(Ui.text(this, "", 17, Ui.muted, false));
         statusRow.addView(status);
         hdBadge = Ui.text(this, "HD", 11, Ui.text, true);
         hdBadge.setBackground(Ui.round(Ui.glassStrong, dp(6)));
@@ -101,22 +116,12 @@ public class InCallActivity extends BaseActivity implements CallManager.Listener
         hlp.leftMargin = dp(8);
         statusRow.addView(hdBadge, hlp);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
-        slp.topMargin = dp(28);
+        slp.topMargin = dp(6);
         col.addView(statusRow, slp);
 
-        avatar = new AvatarView(this);
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(124), dp(124));
-        alp.topMargin = dp(22);
-        col.addView(avatar, alp);
-        nameView = Ui.text(this, "", 30, Ui.text, true);
-        nameView.setGravity(Gravity.CENTER);
-        nameView.setMaxLines(2);
-        nameView.setEllipsize(TextUtils.TruncateAt.END);
-        nameView.setPadding(0, dp(18), 0, 0);
-        col.addView(nameView, new LinearLayout.LayoutParams(-1, -2));
-        subView = Ui.oneLine(Ui.text(this, "", 16, Ui.muted, false));
+        subView = Ui.oneLine(Ui.text(this, "", 15, Ui.muted, false));
         subView.setGravity(Gravity.CENTER);
-        subView.setPadding(0, dp(6), 0, 0);
+        subView.setPadding(0, dp(4), 0, 0);
         col.addView(subView, new LinearLayout.LayoutParams(-1, -2));
         manageConf = Ui.button(this, "Manage conference", Ui.TONAL, v -> manageConference());
         manageConf.setVisibility(View.GONE);
@@ -221,6 +226,18 @@ public class InCallActivity extends BaseActivity implements CallManager.Listener
         return super.onKeyDown(keyCode, event);
     }
 
+    @Override
+    public void onBackPressed() {
+        if (panel == PANEL_KEYPAD) {
+            keypadWanted = false;
+            render();
+        } else if (ended || !CallManager.hasCalls()) {
+            finishAndRemoveTask();
+        } else {
+            moveTaskToBack(true); // the call keeps going; tap the notification or the banner to return
+        }
+    }
+
     // ------------------------------------------------------------------ render
 
     private void render() {
@@ -266,12 +283,20 @@ public class InCallActivity extends BaseActivity implements CallManager.Listener
             shownPhoto = info.photoUri;
             avatar.setPhoto(info.photo);
             photoBg.setImageBitmap(info.photo);
-            if (Build.VERSION.SDK_INT >= 31) {
-                photoBg.setRenderEffect(RenderEffect.createBlurEffect(dp(40), dp(40), Shader.TileMode.CLAMP));
+            // Contact poster: the photo fills the screen, like on an iPhone.
+            boolean big = info.photo.getWidth() >= 320;
+            if (big) {
+                avatar.setVisibility(View.INVISIBLE);
+                photoBg.setRenderEffect(null);
+            } else if (Build.VERSION.SDK_INT >= 31) {
+                photoBg.setRenderEffect(RenderEffect.createBlurEffect(dp(30), dp(30), Shader.TileMode.CLAMP));
+            }
+            if (big || Build.VERSION.SDK_INT >= 31) {
                 photoBg.animate().alpha(1f).setDuration(300).start();
                 photoScrim.animate().alpha(1f).setDuration(300).start();
             }
         } else if (info.photo == null && shownPhoto == null) {
+            avatar.setVisibility(View.VISIBLE);
             photoBg.setAlpha(0f);
             photoScrim.setAlpha(0f);
         }
@@ -401,46 +426,45 @@ public class InCallActivity extends BaseActivity implements CallManager.Listener
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER_HORIZONTAL);
-        LinearLayout reply = new LinearLayout(this);
-        reply.setGravity(Gravity.CENTER);
-        reply.setMinimumHeight(dp(48));
-        reply.setPadding(dp(18), 0, dp(18), 0);
-        reply.setBackground(Ui.ripple(Ui.glassCard(this, 24, true), Ui.round(0xFFFFFFFF, dp(24))));
-        reply.addView(Ui.icon(this, R.drawable.ic_reply, Ui.text), new LinearLayout.LayoutParams(dp(18), dp(18)));
-        TextView rt = Ui.text(this, "Reply with a message", 14, Ui.text, true);
-        rt.setPadding(dp(10), 0, 0, 0);
-        reply.addView(rt);
-        reply.setOnClickListener(Ui.tap(v -> replyMenu(c)));
-        Ui.press(reply);
-        box.addView(reply, new LinearLayout.LayoutParams(-2, -2));
+
+        // Small actions above the big buttons, as on an iPhone.
+        LinearLayout small = new LinearLayout(this);
+        small.addView(smallAction(R.drawable.ic_volume_off, "Silence", v -> {
+            try {
+                getSystemService(TelecomManager.class).silenceRinger();
+            } catch (RuntimeException ignored) {
+            }
+        }), new LinearLayout.LayoutParams(0, -2, 1f));
+        small.addView(smallAction(R.drawable.ic_message, "Message", v -> replyMenu(c)), new LinearLayout.LayoutParams(0, -2, 1f));
+        box.addView(small, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, -2);
-        rowLp.topMargin = dp(28);
+        rowLp.topMargin = dp(30);
+        rowLp.bottomMargin = dp(8);
         box.addView(row, rowLp);
         Call active = CallManager.find(Call.STATE_ACTIVE);
-        // Every button sits 18dp down so the pulsing ring around Answer has room.
-        row.addView(offset(Ui.tile(this, R.drawable.ic_call_end, "Decline", Ui.danger, 0xFFFFFFFF, 76, v -> CallManager.decline(c))),
+        row.addView(Ui.tile(this, R.drawable.ic_call_end, "Decline", Ui.danger, 0xFFFFFFFF, 78, v -> CallManager.decline(c)),
                 new LinearLayout.LayoutParams(0, -2, 1f));
         if (active != null) {
-            row.addView(offset(Ui.tile(this, R.drawable.ic_call_end, "End and answer", Ui.glassStrong, Ui.text, 76, v -> {
+            row.addView(Ui.tile(this, R.drawable.ic_call_end, "End & Accept", 0x33FFFFFF, 0xFFFFFFFF, 78, v -> {
                 CallManager.hangUp(active);
                 CallManager.answer(c);
-            })), new LinearLayout.LayoutParams(0, -2, 1f));
+            }), new LinearLayout.LayoutParams(0, -2, 1f));
         }
-        FrameLayout answerBox = new FrameLayout(this);
-        answerBox.addView(new LivelyBackground(this, Ui.accent),
-                new FrameLayout.LayoutParams(dp(112), dp(112), Gravity.CENTER_HORIZONTAL | Gravity.TOP));
-        LinearLayout answer = Ui.tile(this, R.drawable.ic_call, active != null ? "Hold and answer" : "Answer", Ui.accent, Ui.onAccent, 76, v -> {
+        row.addView(Ui.tile(this, R.drawable.ic_call, active != null ? "Hold & Accept" : "Accept", Ui.accent, Ui.onAccent, 78, v -> {
             if (active != null) active.hold();
             CallManager.answer(c);
-        });
-        FrameLayout.LayoutParams alp = new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_HORIZONTAL | Gravity.TOP);
-        alp.topMargin = dp(18);
-        answerBox.addView(answer, alp);
-        row.addView(answerBox, new LinearLayout.LayoutParams(0, -2, 1f));
+        }), new LinearLayout.LayoutParams(0, -2, 1f));
         return box;
+    }
+
+    private LinearLayout smallAction(int icon, String label, View.OnClickListener l) {
+        LinearLayout t = Ui.tile(this, icon, label, 0x00000000, 0xFFFFFFFF, 48, l);
+        ((TextView) t.getChildAt(1)).setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13);
+        ((TextView) t.getChildAt(1)).setPadding(0, 0, 0, 0);
+        return t;
     }
 
     private View offset(View v) {
@@ -464,7 +488,7 @@ public class InCallActivity extends BaseActivity implements CallManager.Listener
     }
 
     private LinearLayout controlTile(int icon, String label, boolean on, boolean enabled, View.OnClickListener l) {
-        LinearLayout t = Ui.tile(this, icon, label, on ? Ui.accent : Ui.glassStrong, on ? Ui.onAccent : Ui.text, 64, enabled ? l : null);
+        LinearLayout t = Ui.tile(this, icon, label, on ? 0xFFFFFFFF : 0x33FFFFFF, on ? 0xFF111114 : 0xFFFFFFFF, 76, enabled ? l : null);
         t.setAlpha(enabled ? 1f : 0.4f);
         t.setEnabled(enabled);
         return t;
@@ -498,7 +522,7 @@ public class InCallActivity extends BaseActivity implements CallManager.Listener
         if (!Prefs.REC_OFF.equals(Prefs.recording(this))) {
             boolean rec = RecorderService.recording;
             LinearLayout r = Ui.tile(this, rec ? R.drawable.ic_stop : R.drawable.ic_record, rec ? "Stop" : "Record",
-                    rec ? Ui.danger : Ui.glassStrong, rec ? 0xFFFFFFFF : Ui.danger, 64, live ? v -> toggleRecording(c) : null);
+                    rec ? Ui.danger : 0x33FFFFFF, 0xFFFFFFFF, 76, live ? v -> toggleRecording(c) : null);
             r.setAlpha(live ? 1f : 0.4f);
             tiles.add(r);
         } else {
@@ -508,12 +532,13 @@ public class InCallActivity extends BaseActivity implements CallManager.Listener
             LinearLayout row = new LinearLayout(this);
             for (int j = i; j < Math.min(i + 3, tiles.size()); j++) row.addView(tiles.get(j), new LinearLayout.LayoutParams(0, -2, 1f));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-            lp.bottomMargin = dp(18);
+            lp.bottomMargin = dp(22);
             box.addView(row, lp);
         }
-        ImageView end = Ui.iconButton(this, R.drawable.ic_call_end, 76, Ui.danger, 0xFFFFFFFF, "End call", v -> CallManager.hangUp(c));
+        ImageView end = Ui.iconButton(this, R.drawable.ic_call_end, 78, Ui.danger, 0xFFFFFFFF, "End call", v -> CallManager.hangUp(c));
         LinearLayout.LayoutParams elp = (LinearLayout.LayoutParams) end.getLayoutParams();
-        elp.topMargin = dp(6);
+        elp.topMargin = dp(16);
+        elp.bottomMargin = dp(8);
         box.addView(end);
         return box;
     }
