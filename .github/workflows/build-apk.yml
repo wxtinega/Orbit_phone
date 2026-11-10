@@ -23,7 +23,20 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Restore signing key
+        env:
+          KEYSTORE: ${{ secrets.TI_KEYSTORE }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then
+            echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/ti.jks"
+            echo "TI_KEYSTORE_FILE=$RUNNER_TEMP/ti.jks" >> "$GITHUB_ENV"
+          else
+            echo "No signing key secret: building with a debug key (cannot update installed copies)."
+          fi
+
       - name: Build release APK
+        env:
+          TI_KEY_PASSWORD: ${{ secrets.TI_KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon
 
       - name: Rename APK
@@ -74,3 +87,36 @@ jobs:
           git add -A
           git -c user.name="Orbit Dial CI" -c user.email="ci@users.noreply.github.com" commit -q -m "UI check for ${GITHUB_SHA::7}" || exit 0
           git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" ui-shots
+
+  # After the emulator check, publish the APK as a public download anyone can install:
+  # https://github.com/wxtinega/Orbit_phone/releases/download/app/TI-Dial.apk
+  publish:
+    needs: ui-check
+    if: github.repository == 'wxtinega/Orbit_phone' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: OrbitDial-apk
+
+      - name: Publish download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HAS_KEY: ${{ secrets.TI_KEYSTORE != '' }}
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then echo "Signing key not set up, skipping publish."; exit 0; fi
+          cp OrbitDial.apk TI-Dial.apk
+          version=$(grep versionName app/build.gradle | grep -o '"[^"]*"' | tr -d '"')
+          notes="T.I Dial $version for Android 8 and newer.
+
+          Install: open https://github.com/${{ github.repository }}/releases/download/app/TI-Dial.apk on your phone, open the downloaded file, allow installs from your browser if asked, then tap Install. Open T.I Dial and set it as your default phone app when asked.
+
+          Updates: download the same link again and tap Update."
+          if gh release view app > /dev/null 2>&1; then
+            gh release upload app TI-Dial.apk --clobber
+            gh release edit app --title "T.I Dial $version" --notes "$notes"
+          else
+            gh release create app TI-Dial.apk --target "$GITHUB_SHA" --title "T.I Dial $version" --notes "$notes" --latest
+          fi

@@ -10,17 +10,21 @@ android {
         applicationId "com.orbitdial.app"
         minSdk 26
         targetSdk 34
-        versionCode 3
-        versionName "2.0"
+        versionCode 4
+        versionName "2.1"
     }
 
+    // The release key lives only in this repository's GitHub secrets, never in the code,
+    // so only the owner's builds can be installed as updates. Builds without it (forks) use a debug key.
+    def keyFile = System.getenv('TI_KEYSTORE_FILE')
     signingConfigs {
-        // One fixed key, so every new build installs over the last one without uninstalling.
-        orbit {
-            storeFile file('orbit-release.jks')
-            storePassword 'orbitdial-release'
-            keyAlias 'orbit'
-            keyPassword 'orbitdial-release'
+        if (keyFile) {
+            tidial {
+                storeFile file(keyFile)
+                storePassword System.getenv('TI_KEY_PASSWORD')
+                keyAlias 'tidial'
+                keyPassword System.getenv('TI_KEY_PASSWORD')
+            }
         }
     }
 
@@ -29,10 +33,7 @@ android {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
-            signingConfig signingConfigs.orbit
-        }
-        debug {
-            signingConfig signingConfigs.orbit
+            signingConfig keyFile ? signingConfigs.tidial : signingConfigs.debug
         }
     }
 
